@@ -201,6 +201,25 @@ pub fn onset_strength_envelope(samples: &[f32], sample_rate: u32) -> Vec<f64> {
     flux.iter().map(|&v| v / max).collect()
 }
 
+/// Compute onset strength envelope of the **low band only** (< 200 Hz).
+///
+/// This captures kick drum periodicity without hi-hat/snare interference.
+/// Immune to triplet hi-hat patterns that cause 4/3 errors in the full-spectrum
+/// onset envelope.
+pub fn low_band_onset_envelope(samples: &[f32], sample_rate: u32) -> Vec<f64> {
+    let low = spectral::lowpass_filter(samples, sample_rate, LOW_CUTOFF);
+    let hop = hop_size_for_sr(sample_rate);
+    let stft_result = spectral::stft(&low, sample_rate, FFT_SIZE, hop);
+    let flux = spectral::superflux(&stft_result, 3);
+
+    // Normalize
+    let max = flux.iter().cloned().fold(0.0f64, f64::max);
+    if max < 1e-10 {
+        return flux;
+    }
+    flux.iter().map(|&v| v / max).collect()
+}
+
 /// Compute RMS energy envelope (for comb filter resonator bank).
 ///
 /// Returns a continuous energy signal at ~100 Hz frame rate.

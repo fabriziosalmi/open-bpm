@@ -467,10 +467,10 @@ pub fn fuse_estimates(
     ioi: Option<TempoEstimate>,
     comb: Option<TempoEstimate>,
     ac: Option<TempoEstimate>,
-    tgram: Option<TempoEstimate>,
+    low_ac: Option<TempoEstimate>,
 ) -> TempoEstimate {
     // Tag each estimate with its source priority (lower = preferred for metrical choice)
-    // IOI=0 (best octave), Comb=1, Tempogram=2, AC=3 (worst octave)
+    // IOI=0 (best octave), Comb=1, Low-band AC=1 (both octave-reliable), AC=3 (worst octave)
     let mut tagged: Vec<(TempoEstimate, u8)> = Vec::new();
     if let Some(e) = ioi {
         tagged.push((e, 0));
@@ -478,8 +478,8 @@ pub fn fuse_estimates(
     if let Some(e) = comb {
         tagged.push((e, 1));
     }
-    if let Some(e) = tgram {
-        tagged.push((e, 2));
+    if let Some(e) = low_ac {
+        tagged.push((e, 2)); // between comb (1) and full AC (3)
     }
     if let Some(e) = ac {
         tagged.push((e, 3));

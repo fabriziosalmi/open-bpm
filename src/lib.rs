@@ -40,6 +40,7 @@ pub struct EstimatorResults {
     pub ioi: Option<TempoEstimate>,
     pub comb: Option<TempoEstimate>,
     pub autocorrelation: Option<TempoEstimate>,
+    pub low_band_ac: Option<TempoEstimate>,
     pub tempogram: Option<TempoEstimate>,
 }
 
@@ -135,23 +136,26 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
                 ioi: None,
                 comb: None,
                 autocorrelation: None,
+                low_band_ac: None,
                 tempogram: None,
             },
         };
     }
 
-    // 2. Compute onset strength envelope for tempo estimation
+    // 2. Compute onset strength envelopes
     let onset_env = onset::onset_strength_envelope(samples, sample_rate);
+    let low_env = onset::low_band_onset_envelope(samples, sample_rate);
 
-    // 3. Quad estimation
-    // Comb filter uses a smoothed onset envelope for better resonance
+    // 3. Multi-estimator tempo estimation
     let smoothed_env = tempo::smooth_envelope(&onset_env, 5);
     let ioi_est = tempo::ioi_histogram(&onsets, opts.min_bpm, opts.max_bpm);
     let comb_est = tempo::comb_filter(&smoothed_env, sr, opts.min_bpm, opts.max_bpm);
     let ac_est = tempo::autocorrelation(&onset_env, sr, opts.min_bpm, opts.max_bpm);
-    let tgram_est = tempo::tempogram(&onset_env, sr, opts.min_bpm, opts.max_bpm);
+    // Low-band AC: autocorrelation on kick-only signal (immune to triplet hi-hats)
+    let low_ac_est = tempo::autocorrelation(&low_env, sr, opts.min_bpm, opts.max_bpm);
 
-    // 4. Fusion (tempogram excluded — too correlated with AC, adds redundant votes)
+    // 4. Fusion — 3 core estimators (low-band AC computed but not in fusion:
+    // adds a 4th vote that disrupts the balance without consistent improvement)
     let fused = tempo::fuse_estimates(ioi_est, comb_est, ac_est, None);
 
     // 5. Metrical resolution (2x, /2, 4/3, 3/4)
@@ -204,7 +208,8 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
             ioi: ioi_est,
             comb: comb_est,
             autocorrelation: ac_est,
-            tempogram: tgram_est,
+            low_band_ac: low_ac_est,
+            tempogram: None,
         },
     }
 }
@@ -274,6 +279,7 @@ fn consensus_merge(
             ioi: None,
             comb: None,
             autocorrelation: None,
+            low_band_ac: None,
             tempogram: None,
         });
 
