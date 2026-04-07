@@ -611,12 +611,12 @@ fn pick_metrical_level(cluster: &[(TempoEstimate, u8)]) -> f64 {
     }
 
     // Combined ranking: votes + EDM zone score.
-    // vote_weight=0.15 means a single vote with zone score 0.3 (e.g. 140 BPM
-    // in trance zone) beats 2 votes with zone score 0.0 (e.g. 70 BPM, no zone):
-    //   1*0.15 + 0.30 = 0.45  >  2*0.15 + 0.00 = 0.30
+    // vote_weight=0.10 means EDM zone dominates when present:
+    //   IOI at 160 (zone=0.2): 1*0.10 + 0.23 = 0.33
+    //   Comb+AC at 80 (no zone): 2*0.10 + 0.10 = 0.30  → IOI wins
     levels.sort_by(|a, b| {
-        let rank_a = a.1 as f64 * 0.15 + a.2;
-        let rank_b = b.1 as f64 * 0.15 + b.2;
+        let rank_a = a.1 as f64 * 0.10 + a.2;
+        let rank_b = b.1 as f64 * 0.10 + b.2;
         rank_b.partial_cmp(&rank_a).unwrap()
     });
 
@@ -690,8 +690,10 @@ fn edm_tempo_zone_score(bpm: f64) -> f64 {
         (125.0, 8.0, 0.8),  // house
         (135.0, 8.0, 0.7),  // tech house
         (145.0, 8.0, 0.6),  // trance
-        (175.0, 8.0, 0.7),  // DnB (167-183)
-        (88.0, 5.0, 0.5),   // half-time
+        (174.0, 10.0, 0.7), // DnB (164-184)
+        // NOTE: half-time zone (83-93) REMOVED — it systematically causes
+        // correct 170+ BPM to be halved to 85. BPMs in this range are rare in
+        // EDM and don't need zone protection.
         (155.0, 6.0, 0.4),  // hardstyle
         (190.0, 12.0, 0.4), // fast EDM / gabber (178-202)
     ];
