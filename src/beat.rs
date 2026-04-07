@@ -193,6 +193,24 @@ pub fn snap_to_integer(bpm: f64, onsets: &[Onset], sample_rate: f64) -> f64 {
     }
 }
 
+/// Wide snap for machine-timed tracks: snaps within 0.5 BPM (mixi-style).
+/// Only used when the Bouncer confirms machine timing (jitter < 2ms).
+pub fn snap_to_integer_wide(bpm: f64, onsets: &[Onset], sample_rate: f64) -> f64 {
+    let rounded = bpm.round();
+    if (bpm - rounded).abs() > 0.5 {
+        return bpm;
+    }
+
+    let original_score = best_grid_score(onsets, bpm, sample_rate);
+    let rounded_score = best_grid_score(onsets, rounded, sample_rate);
+
+    if original_score < 1e-10 || rounded_score >= original_score * SNAP_SCORE_RATIO {
+        rounded
+    } else {
+        bpm
+    }
+}
+
 /// Compute a "bar integrality" score for a BPM given a track duration.
 ///
 /// In produced EDM, the total number of bars (duration * bpm / 240) is almost

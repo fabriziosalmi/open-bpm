@@ -17,6 +17,7 @@
 //! ```
 
 pub mod beat;
+pub mod bouncer;
 pub mod onset;
 pub mod spectral;
 pub mod tempo;
@@ -125,8 +126,10 @@ pub fn detect_with_options(samples: &[f32], sample_rate: u32, opts: &DetectOptio
 fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> BpmResult {
     let sr = sample_rate as f64;
 
-    // 1. Multi-band onset detection
+    // 0. Bouncer: extract acoustic passport (< 1ms)
     let onsets = onset::detect_onsets_multiband(samples, sample_rate);
+    let onset_pairs: Vec<(f64, f64)> = onsets.iter().map(|o| (o.time, o.strength)).collect();
+    let passport = bouncer::extract_passport(samples, sample_rate, &onset_pairs);
 
     if onsets.len() < 4 {
         return BpmResult {
@@ -199,7 +202,12 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     let grid_offset = beat::find_grid_offset(&onsets, refined_bpm, sr);
 
     // 8. Snap to integer if close
-    let final_bpm = beat::snap_to_integer(refined_bpm, &onsets, sr);
+    // Machine-timed tracks (DAW-produced) are ALWAYS integer BPM — wider snap
+    let final_bpm = if passport.is_machine_timed {
+        beat::snap_to_integer_wide(refined_bpm, &onsets, sr)
+    } else {
+        beat::snap_to_integer(refined_bpm, &onsets, sr)
+    };
 
     // Confidence from fusion + grid alignment
     let confidence = (resolved.confidence * 0.6 + grid_score * 0.4).clamp(0.0, 1.0);
