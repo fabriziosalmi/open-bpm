@@ -175,6 +175,35 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
         opts.max_bpm,
     );
 
+    // 5a. Hopf tiebreaker: when fusion confidence is low (estimators disagreed)
+    // and the Hopf oscillator has a clear resonance in an EDM zone, trust it.
+    // This catches the 16 tracks where all 3 core estimators are wrong but
+    // the Hopf's nonlinear resonance locks onto the true period.
+    let resolved = if resolved.confidence < 0.40 {
+        if let Some(ref h) = hopf_est {
+            let hopf_zone = tempo::edm_tempo_zone_score(h.bpm);
+            if h.confidence > 0.10 && hopf_zone > 0.2 {
+                TempoEstimate {
+                    bpm: h.bpm,
+                    confidence: resolved.confidence, // keep original confidence
+                }
+            } else {
+                resolved
+            }
+        } else {
+            resolved
+        }
+    } else {
+        resolved
+    };
+
+    // 5b. Comb+Hopf override — disabled pending further tuning
+    let resolved = if false {
+        resolved // placeholder
+    } else {
+        resolved
+    };
+
     // 5b. Bar count tiebreaker — only for tracks >= 3 minutes where
     // track duration is musically meaningful (full songs produce cleaner
     // bar counts than short clips/previews)

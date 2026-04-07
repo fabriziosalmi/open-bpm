@@ -815,7 +815,7 @@ pub fn resolve_metrical(
 /// - Trance / hard techno: 140-150
 /// - DnB / jungle: 170-178
 /// - Half-time bass: 85-92
-fn edm_tempo_zone_score(bpm: f64) -> f64 {
+pub fn edm_tempo_zone_score(bpm: f64) -> f64 {
     let zones: &[(f64, f64, f64)] = &[
         // (center, half_width, peak_score)
         (105.0, 12.0, 0.5), // deep house / hip-hop / UK garage (93-117)
