@@ -115,6 +115,7 @@ fn main() {
                 if let Some(s) = result.estimators.spectral {
                     println!("  Spectral FFT:  {:.2} BPM ({:.0}%)", s.bpm, s.confidence * 100.0);
                 }
+                // Passport info omitted from public output for now
                 println!(
                     "  duration: {:.1}s ({} samples @ {}Hz)",
                     samples.len() as f64 / sample_rate as f64,

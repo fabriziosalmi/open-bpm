@@ -131,7 +131,8 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     // 0. Bouncer: extract acoustic passport (< 1ms)
     let onsets = onset::detect_onsets_multiband(samples, sample_rate);
     let onset_pairs: Vec<(f64, f64)> = onsets.iter().map(|o| (o.time, o.strength)).collect();
-    let passport = bouncer::extract_passport(samples, sample_rate, &onset_pairs);
+    let band_counts = onset::count_per_band(&onsets);
+    let passport = bouncer::extract_passport(samples, sample_rate, &onset_pairs, band_counts);
 
     if onsets.len() < 4 {
         return BpmResult {
@@ -216,11 +217,22 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
         resolved
     };
 
-    // 5b. Comb+Hopf override — disabled pending further tuning
-    let resolved = if false {
-        resolved // placeholder
-    } else {
-        resolved
+    // 5b. Exclusion rules (Sherlock filter): eliminate impossible BPMs
+    //
+    // Rule N-3: if detected BPM > 160 AND D_high < 4/sec → NOT DnB/Jungle
+    //   → force half-time (the fast BPM is a doubling artifact)
+    // Rule N-4: if detected BPM < 80 AND D_low > 2/sec → NOT dubstep/trap
+    //   → force double (the slow BPM is a halving artifact)
+    let resolved = {
+        let mut bpm = resolved.bpm;
+
+        // N-3 and N-4 disabled for validation — need to verify on real audio first
+        let _ = &passport; // suppress unused warning
+
+        TempoEstimate {
+            bpm,
+            confidence: resolved.confidence,
+        }
     };
 
     // 5b. Bar count tiebreaker — only for tracks >= 3 minutes where

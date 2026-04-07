@@ -16,11 +16,22 @@ pub struct AcousticPassport {
     pub is_drumless: bool,
     /// True if timing suggests machine-sequenced (jitter < 2ms).
     pub is_machine_timed: bool,
+    /// Low-band onset density (kicks/bass per second).
+    pub d_low: f32,
+    /// High-band onset density (hi-hats/cymbals per second).
+    pub d_high: f32,
 }
 
 /// Extract acoustic passport from mono PCM samples.
 /// Designed to run in < 1ms on any track length.
-pub fn extract_passport(samples: &[f32], sample_rate: u32, onsets: &[(f64, f64)]) -> AcousticPassport {
+///
+/// `band_counts`: (low_onsets, mid_onsets, high_onsets) from multi-band detection.
+pub fn extract_passport(
+    samples: &[f32],
+    sample_rate: u32,
+    onsets: &[(f64, f64)],
+    band_counts: (usize, usize, usize),
+) -> AcousticPassport {
     let sr = sample_rate as f64;
     let duration = samples.len() as f64 / sr;
 
@@ -37,12 +48,19 @@ pub fn extract_passport(samples: &[f32], sample_rate: u32, onsets: &[(f64, f64)]
     // 3. Tempo stability: jitter of inter-onset intervals
     let (tempo_stability, is_machine_timed) = compute_jitter(onsets);
 
+    // 4. Per-band densities
+    let (low_count, _mid_count, high_count) = band_counts;
+    let d_low = if duration > 0.0 { low_count as f32 / duration as f32 } else { 0.0 };
+    let d_high = if duration > 0.0 { high_count as f32 / duration as f32 } else { 0.0 };
+
     AcousticPassport {
         crest_factor_db,
         transient_density,
         tempo_stability,
         is_drumless,
         is_machine_timed,
+        d_low,
+        d_high,
     }
 }
 
