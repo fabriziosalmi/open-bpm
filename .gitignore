@@ -13,3 +13,6 @@ test-audio/
 bench/giantsteps-audio/
 bench/giantsteps-tempo-dataset/
 bench/benchmark_results.tsv
+INTEGRATION.md
+bench/mixi-bench/
+bench/compare_mixi.*
