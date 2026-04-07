@@ -193,6 +193,63 @@ pub fn snap_to_integer(bpm: f64, onsets: &[Onset], sample_rate: f64) -> f64 {
     }
 }
 
+/// Compute a "bar integrality" score for a BPM given a track duration.
+///
+/// In produced EDM, the total number of bars (duration * bpm / 240) is almost
+/// always an integer (or very close). This score measures how close the bar
+/// count is to the nearest integer — a BPM that produces 64.0 bars scores
+/// higher than one producing 63.7 bars.
+///
+/// Returns a score in [0, 1] where 1 = perfectly integer bars.
+pub fn bar_count_score(bpm: f64, duration_secs: f64) -> f64 {
+    if bpm <= 0.0 || duration_secs <= 0.0 {
+        return 0.0;
+    }
+
+    let bars = duration_secs * bpm / 240.0; // 4 beats per bar
+
+    // Distance from nearest half-integer (tracks are often cut at half-phrase)
+    // e.g. 61.5 bars is "clean" (half-phrase boundary), 61.3 is not
+    let half_bars = bars * 2.0; // convert to half-bars
+    let frac = (half_bars - half_bars.round()).abs();
+
+    // Score: 1.0 at frac=0, drops to 0 at frac=0.5
+    (1.0 - frac * 2.0).max(0.0)
+}
+
+/// Test multiple metrical variants of a BPM and return the one with the
+/// best bar integrality. Only overrides if the alternative is clearly better.
+///
+/// Factors tested: 1, 2, 1/2, 4/3, 3/4
+pub fn bar_count_resolve(bpm: f64, duration_secs: f64, min_bpm: f64, max_bpm: f64) -> f64 {
+    let factors: &[f64] = &[1.0, 2.0, 0.5, 4.0 / 3.0, 3.0 / 4.0];
+
+    let original_score = bar_count_score(bpm, duration_secs);
+    let mut best_bpm = bpm;
+    let mut best_score = original_score;
+
+    for &f in factors {
+        let candidate = bpm * f;
+        if candidate < min_bpm || candidate > max_bpm {
+            continue;
+        }
+        let score = bar_count_score(candidate, duration_secs);
+
+        // Only override if:
+        // The alternative is near-perfect (>0.95) and original is poor (<0.5).
+        // This is very conservative — only fires when the bar count evidence
+        // is overwhelming. Avoids false corrections on short/synthetic signals.
+        let should_override = score > 0.95 && best_score < 0.5;
+
+        if should_override {
+            best_score = score;
+            best_bpm = candidate;
+        }
+    }
+
+    best_bpm
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

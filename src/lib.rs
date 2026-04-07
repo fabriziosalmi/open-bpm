@@ -155,7 +155,6 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     let fused = tempo::fuse_estimates(ioi_est, comb_est, ac_est, None);
 
     // 5. Metrical resolution (2x, /2, 4/3, 3/4)
-    // Pass comb filter estimate as reference — it's the most octave-reliable estimator
     let resolved = tempo::resolve_metrical(
         fused,
         comb_est,
@@ -164,6 +163,25 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
         opts.min_bpm,
         opts.max_bpm,
     );
+
+    // 5b. Bar count tiebreaker — only for tracks >= 3 minutes where
+    // track duration is musically meaningful (full songs produce cleaner
+    // bar counts than short clips/previews)
+    let track_duration = samples.len() as f64 / sr;
+    let resolved = if track_duration >= 180.0 {
+        let bar_resolved_bpm = beat::bar_count_resolve(
+            resolved.bpm,
+            track_duration,
+            opts.min_bpm,
+            opts.max_bpm,
+        );
+        TempoEstimate {
+            bpm: bar_resolved_bpm,
+            confidence: resolved.confidence,
+        }
+    } else {
+        resolved
+    };
 
     // 6. Grid alignment & fine refinement
     let (refined_bpm, grid_score) =
