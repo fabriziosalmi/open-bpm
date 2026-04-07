@@ -20,6 +20,7 @@ pub mod beat;
 pub mod bouncer;
 pub mod metalearner;
 pub mod onset;
+pub mod phrase;
 pub mod spectral;
 pub mod tempo;
 
@@ -94,7 +95,10 @@ pub fn detect_with_options(samples: &[f32], sample_rate: u32, opts: &DetectOptio
 
     // If track is short or segmented is off, analyze the whole thing
     if !opts.segmented || duration < opts.segment_duration * 2.0 {
-        return analyze_segment(samples, sample_rate, opts);
+        let mut result = analyze_segment(samples, sample_rate, opts);
+        // Phrase analysis on full track (needs >= 90s)
+        result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
+        return result;
     }
 
     // Segmented analysis: pick strategic positions (skip intro/outro)
@@ -110,18 +114,27 @@ pub fn detect_with_options(samples: &[f32], sample_rate: u32, opts: &DetectOptio
         let start = ((pos * samples.len() as f64) as usize).min(samples.len().saturating_sub(segment_len));
         let end = (start + segment_len).min(samples.len());
         if end - start < (sr * 3.0) as usize {
-            continue; // skip segments shorter than 3 seconds
+            continue;
         }
         let result = analyze_segment(&samples[start..end], sample_rate, opts);
         segment_results.push(result);
     }
 
     if segment_results.is_empty() {
-        return analyze_segment(samples, sample_rate, opts);
+        let mut result = analyze_segment(samples, sample_rate, opts);
+        result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
+        return result;
     }
 
     // Consensus: find the BPM most segments agree on
-    consensus_merge(segment_results, samples, sample_rate, opts)
+    let mut result = consensus_merge(segment_results, samples, sample_rate, opts);
+
+    // Phrase analysis on FULL TRACK (post-consensus, needs >= 90s)
+    // This catches slow tracks doubled to fast BPMs — the phrase structure
+    // at the half BPM will align better with energy valleys.
+    result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
+
+    result
 }
 
 /// Analyze a single segment of audio.
@@ -217,11 +230,7 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
         resolved
     };
 
-    // 5b. Slow-BPM halving — OPEN PROBLEM
-    // Tracks at 80-95 BPM with offbeat content get doubled to 160-190.
-    // Comb probe halving tested (0.85, 0.95 thresholds) — breaks DnB.
-    // The comb score at half-BPM is too close to full-BPM for BOTH cases.
-    // Next approach: phrase structure analysis (see user's idea below).
+    // 5b. Phrase halving moved to detect_with_options (needs full track, not segment)
     let resolved = {
         let bpm = resolved.bpm;
         let _ = &passport;
