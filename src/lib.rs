@@ -168,8 +168,21 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     // SBERN: Hopf oscillator bank
     let hopf_est = tempo::hopf_oscillator_bank(&onset_env, sr, opts.min_bpm, opts.max_bpm);
 
-    // 4. Fusion — 3 core estimators
-    let fused = tempo::fuse_estimates(ioi_est, comb_est, ac_est, None);
+    // 4. Two-pass fusion:
+    // Pass 1: onset-based estimators only
+    let fused_onset = tempo::fuse_estimates(ioi_est, comb_est, ac_est, None);
+
+    // Pass 2: if onset estimators disagree (low confidence), add spectral FFT
+    let fused = if fused_onset.confidence < 0.60 {
+        match spectral_est {
+            Some(ref s) if s.confidence > 0.70 => {
+                tempo::fuse_estimates(ioi_est, comb_est, ac_est, Some(*s))
+            }
+            _ => fused_onset,
+        }
+    } else {
+        fused_onset
+    };
 
     // 5. Metrical resolution (2x, /2, 4/3, 3/4)
     let resolved = tempo::resolve_metrical(

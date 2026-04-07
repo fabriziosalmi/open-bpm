@@ -701,7 +701,7 @@ pub fn fuse_estimates(
         tagged.push((e, 1));
     }
     if let Some(e) = low_ac {
-        tagged.push((e, 2)); // between comb (1) and full AC (3)
+        tagged.push((e, 1)); // spectral/low_ac: priority 1 (energy-based, octave-reliable)
     }
     if let Some(e) = ac {
         tagged.push((e, 3));
