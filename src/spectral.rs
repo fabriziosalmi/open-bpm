@@ -5,8 +5,11 @@ use std::f64::consts::PI;
 
 /// Short-Time Fourier Transform result.
 pub struct Stft {
-    /// Magnitude spectrogram, shape: [n_frames][n_bins].
-    pub magnitude: Vec<Vec<f64>>,
+    /// Magnitude spectrogram, flat 1D array [frame * n_bins + bin].
+    /// Single contiguous allocation for cache-friendly access.
+    pub magnitude: Vec<f64>,
+    /// Number of frames.
+    pub n_frames: usize,
     /// Number of frequency bins (fft_size / 2 + 1).
     pub n_bins: usize,
     /// Hop size in samples.
@@ -15,13 +18,21 @@ pub struct Stft {
     pub frame_rate: f64,
 }
 
+impl Stft {
+    /// Access magnitude at [frame][bin].
+    #[inline]
+    pub fn mag(&self, frame: usize, bin: usize) -> f64 {
+        self.magnitude[frame * self.n_bins + bin]
+    }
+}
+
 /// Compute STFT magnitude spectrogram.
 pub fn stft(samples: &[f32], sample_rate: u32, fft_size: usize, hop_size: usize) -> Stft {
     let n_bins = fft_size / 2 + 1;
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(fft_size);
 
-    // Hann window
+    // Hann window — computed once per call (could be cached with OnceLock for repeated calls)
     let window: Vec<f64> = (0..fft_size)
         .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f64 / fft_size as f64).cos()))
         .collect();
@@ -32,13 +43,13 @@ pub fn stft(samples: &[f32], sample_rate: u32, fft_size: usize, hop_size: usize)
         0
     };
 
-    let mut magnitude = Vec::with_capacity(n_frames);
+    // Single flat allocation — no Vec<Vec<>> fragmentation
+    let mut magnitude = vec![0.0f64; n_frames * n_bins];
     let mut buffer = vec![Complex::new(0.0f64, 0.0); fft_size];
 
     for frame_idx in 0..n_frames {
         let start = frame_idx * hop_size;
 
-        // Apply window and load into buffer
         for i in 0..fft_size {
             let sample = if start + i < samples.len() {
                 samples[start + i] as f64
@@ -50,16 +61,16 @@ pub fn stft(samples: &[f32], sample_rate: u32, fft_size: usize, hop_size: usize)
 
         fft.process(&mut buffer);
 
-        // Extract magnitude for positive frequencies
-        let mag: Vec<f64> = buffer[..n_bins]
-            .iter()
-            .map(|c| (c.re * c.re + c.im * c.im).sqrt())
-            .collect();
-        magnitude.push(mag);
+        // Write magnitude directly into flat array
+        let row_offset = frame_idx * n_bins;
+        for i in 0..n_bins {
+            magnitude[row_offset + i] = (buffer[i].re * buffer[i].re + buffer[i].im * buffer[i].im).sqrt();
+        }
     }
 
     Stft {
         magnitude,
+        n_frames,
         n_bins,
         hop_size,
         frame_rate: sample_rate as f64 / hop_size as f64,
@@ -71,27 +82,23 @@ pub fn stft(samples: &[f32], sample_rate: u32, fft_size: usize, hop_size: usize)
 /// Computes spectral flux with maximum-filtering along the **frequency axis**
 /// to suppress vibrato/tremolo artifacts. Based on Bock & Widmer (2013).
 pub fn superflux(stft: &Stft, max_filter_size: usize) -> Vec<f64> {
-    let n_frames = stft.magnitude.len();
-    if n_frames < 2 {
-        return vec![0.0; n_frames];
+    if stft.n_frames < 2 {
+        return vec![0.0; stft.n_frames];
     }
 
     let half = max_filter_size / 2;
 
-    // Half-wave rectified spectral flux where the previous frame's magnitude
-    // is max-filtered along the frequency axis (suppresses vibrato).
-    let mut flux = vec![0.0f64; n_frames];
-    for frame in 1..n_frames {
+    let mut flux = vec![0.0f64; stft.n_frames];
+    for frame in 1..stft.n_frames {
         let mut sum = 0.0;
         for bin in 0..stft.n_bins {
-            // Max-filter the previous frame along frequency axis
             let lo = bin.saturating_sub(half);
             let hi = (bin + half + 1).min(stft.n_bins);
             let mut prev_max = 0.0f64;
             for b in lo..hi {
-                prev_max = prev_max.max(stft.magnitude[frame - 1][b]);
+                prev_max = prev_max.max(stft.mag(frame - 1, b));
             }
-            let diff = stft.magnitude[frame][bin] - prev_max;
+            let diff = stft.mag(frame, bin) - prev_max;
             if diff > 0.0 {
                 sum += diff;
             }
@@ -104,16 +111,15 @@ pub fn superflux(stft: &Stft, max_filter_size: usize) -> Vec<f64> {
 
 /// Simple spectral flux (half-wave rectified magnitude difference).
 pub fn spectral_flux(stft: &Stft) -> Vec<f64> {
-    let n_frames = stft.magnitude.len();
-    if n_frames < 2 {
-        return vec![0.0; n_frames];
+    if stft.n_frames < 2 {
+        return vec![0.0; stft.n_frames];
     }
 
-    let mut flux = vec![0.0f64; n_frames];
-    for frame in 1..n_frames {
+    let mut flux = vec![0.0f64; stft.n_frames];
+    for frame in 1..stft.n_frames {
         let mut sum = 0.0;
         for bin in 0..stft.n_bins {
-            let diff = stft.magnitude[frame][bin] - stft.magnitude[frame - 1][bin];
+            let diff = stft.mag(frame, bin) - stft.mag(frame - 1, bin);
             if diff > 0.0 {
                 sum += diff;
             }
@@ -159,6 +165,8 @@ fn biquad_filter_q(
     btype: BiquadType,
 ) -> Vec<f32> {
     let sr = sample_rate as f64;
+    // Nyquist guard: clamp frequency below Nyquist to prevent NaN
+    let freq = freq.min(sr / 2.0 - 1.0);
     let w0 = 2.0 * PI * freq / sr;
     let alpha = w0.sin() / (2.0 * q);
     let cos_w0 = w0.cos();
@@ -230,8 +238,9 @@ mod tests {
             .map(|i| (2.0 * PI * 440.0 * i as f64 / sr as f64).sin() as f32)
             .collect();
         let result = stft(&samples, sr, 2048, 512);
-        assert!(result.magnitude.len() > 0);
+        assert!(result.n_frames > 0);
         assert_eq!(result.n_bins, 1025);
+        assert_eq!(result.magnitude.len(), result.n_frames * result.n_bins);
     }
 
     #[test]
