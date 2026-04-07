@@ -109,8 +109,8 @@ fn main() {
                 if let Some(ac) = result.estimators.autocorrelation {
                     println!("  Autocorrel.:   {:.2} BPM ({:.0}%)", ac.bpm, ac.confidence * 100.0);
                 }
-                if let Some(tg) = result.estimators.tempogram {
-                    println!("  Tempogram:     {:.2} BPM ({:.0}%)", tg.bpm, tg.confidence * 100.0);
+                if let Some(h) = result.estimators.hopf {
+                    println!("  Hopf SBERN:    {:.2} BPM ({:.0}%)", h.bpm, h.confidence * 100.0);
                 }
                 println!(
                     "  duration: {:.1}s ({} samples @ {}Hz)",

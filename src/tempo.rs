@@ -452,6 +452,120 @@ pub fn tempogram(
     })
 }
 
+/// SBERN: Sub-Band Envelope Resonator Network (Hopf Oscillator Bank).
+///
+/// Instead of measuring onset intervals or combing for periodicity,
+/// SBERN simulates 280 nonlinear oscillators (damped pendulums), each tuned
+/// to a different BPM. The onset envelope "pushes" all oscillators
+/// simultaneously. The oscillator that resonates with the largest amplitude
+/// wins — it was pushed in-phase by the audio's periodic energy.
+///
+/// Key advantage: the Hopf oscillator has **inertia**. If a beat is missing
+/// (breakdown, syncopation), the oscillator keeps swinging. If the next beat
+/// arrives in-phase, it reinforces. This makes it robust to missing onsets,
+/// polyrythms, and continuous modulation (sidechain, LFO wobble, drones).
+///
+/// Math: discrete Hopf oscillator
+///   z[n+1] = z[n] + [(1 - |z[n]|²) * z[n] + i*w0*z[n] + eps*x[n]] * dt
+///
+/// Cost: 280 oscillators × N frames × ~10 ops = ~3M ops for 10 seconds.
+pub fn hopf_oscillator_bank(
+    onset_env: &[f64],
+    sample_rate: f64,
+    min_bpm: f64,
+    max_bpm: f64,
+) -> Option<TempoEstimate> {
+    if onset_env.len() < 10 {
+        return None;
+    }
+
+    let frame_rate = sample_rate / hop_size_for_sr(sample_rate as u32) as f64;
+    let dt = 1.0 / frame_rate;
+    let epsilon = 0.05; // weak coupling — keeps oscillators in linear regime for max selectivity
+
+    let step = COMB_STEP; // 0.5 BPM resolution
+    let n_oscillators = ((max_bpm - min_bpm) / step) as usize + 1;
+
+    // State: each oscillator is a complex number z = (re, im)
+    let mut z_re = vec![0.001f64; n_oscillators]; // small seed, not zero
+    let mut z_im = vec![0.0f64; n_oscillators];
+
+    // Precompute rotation per frame: exact rotation by angle omega*dt
+    // instead of Euler integration (prevents divergence at high omega)
+    let cos_wdt: Vec<f64> = (0..n_oscillators)
+        .map(|i| {
+            let bpm = min_bpm + i as f64 * step;
+            let omega = 2.0 * std::f64::consts::PI * bpm / 60.0;
+            (omega * dt).cos()
+        })
+        .collect();
+    let sin_wdt: Vec<f64> = (0..n_oscillators)
+        .map(|i| {
+            let bpm = min_bpm + i as f64 * step;
+            let omega = 2.0 * std::f64::consts::PI * bpm / 60.0;
+            (omega * dt).sin()
+        })
+        .collect();
+
+    // Drive all oscillators and accumulate ABSORBED POWER.
+    // Instead of reading final amplitude (which saturates at 1.0 for all),
+    // we measure how much energy the signal transfers to each oscillator.
+    // An in-phase oscillator absorbs more power than an out-of-phase one.
+    let mut power = vec![0.0f64; n_oscillators];
+
+    for &x in onset_env {
+        for i in 0..n_oscillators {
+            let re = z_re[i];
+            let im = z_im[i];
+            let mag_sq = re * re + im * im;
+
+            // Nonlinear amplitude control
+            let damped_re = re + (1.0 - mag_sq) * re * dt;
+            let damped_im = im + (1.0 - mag_sq) * im * dt;
+
+            // Exact rotation
+            let rot_re = damped_re * cos_wdt[i] - damped_im * sin_wdt[i];
+            let rot_im = damped_re * sin_wdt[i] + damped_im * cos_wdt[i];
+
+            // Coupling
+            let coupling = epsilon * x * dt;
+            z_re[i] = rot_re + coupling;
+            z_im[i] = rot_im;
+
+            // Absorbed power: projection of coupling onto oscillator direction
+            // P = coupling * cos(phase) = coupling * re / |z|
+            let mag = (rot_re * rot_re + rot_im * rot_im).sqrt().max(1e-10);
+            power[i] += (coupling * rot_re / mag).abs();
+        }
+    }
+
+    // Find the oscillator that absorbed the most power
+    let mut best_idx = 0;
+    let mut best_amp = 0.0f64;
+    let mut total_amp = 0.0f64;
+
+    for i in 0..n_oscillators {
+        let amp = power[i];
+        total_amp += amp;
+        if amp > best_amp {
+            best_amp = amp;
+            best_idx = i;
+        }
+    }
+
+    if best_amp < 1e-10 {
+        return None;
+    }
+
+    let bpm = min_bpm + best_idx as f64 * step;
+
+    // Confidence: how much the winner stands out
+    let mean_amp = total_amp / n_oscillators as f64;
+    let confidence = ((best_amp - mean_amp) / best_amp).clamp(0.0, 1.0);
+
+    Some(TempoEstimate { bpm, confidence })
+}
+
 /// Fuse three tempo estimates using **metrical-aware** clustering.
 ///
 /// Two BPMs "agree" if they are within 4% of each other after normalizing
