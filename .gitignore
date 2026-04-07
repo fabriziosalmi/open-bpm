@@ -1,0 +1,15 @@
+/target
+*.swp
+*.swo
+*~
+.DS_Store
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+test-audio/
+bench/giantsteps-audio/
+bench/giantsteps-tempo-dataset/
+bench/benchmark_results.tsv
