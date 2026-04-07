@@ -589,9 +589,9 @@ fn pick_metrical_level(cluster: &[(TempoEstimate, u8)]) -> f64 {
     for &(ref est, priority) in cluster {
         let zone = edm_tempo_zone_score(est.bpm);
         let priority_bonus = match priority {
-            0 => 0.03,
-            1 => 0.02,
-            _ => 0.01,
+            0 => 0.03,  // IOI
+            1 => 0.02,  // Comb / low-band AC
+            _ => 0.01,  // AC
         };
         let score = zone + est.confidence * 0.05 + priority_bonus;
 
@@ -610,13 +610,26 @@ fn pick_metrical_level(cluster: &[(TempoEstimate, u8)]) -> f64 {
         }
     }
 
-    // Combined ranking: votes + EDM zone score.
-    // vote_weight=0.10 means EDM zone dominates when present:
-    //   IOI at 160 (zone=0.2): 1*0.10 + 0.23 = 0.33
-    //   Comb+AC at 80 (no zone): 2*0.10 + 0.10 = 0.30  → IOI wins
+    // Adaptive ranking: if any level has a strong EDM zone, zone dominates.
+    // If no level has zone affinity, votes dominate (fall back to majority).
+    //
+    // This prevents the zone from overriding in low-BPM territory (< 100)
+    // where zones don't exist, while still letting the zone correct
+    // octave errors in the 120-180 range where zones are strong.
+    let max_zone: f64 = levels.iter().map(|l| {
+        // Extract zone component from total score (zone is the dominant part)
+        edm_tempo_zone_score(l.0)
+    }).fold(0.0f64, f64::max);
+
+    let vote_weight = if max_zone > 0.15 {
+        0.10 // zone available — let it dominate
+    } else {
+        0.40 // no zone — votes (majority) dominate
+    };
+
     levels.sort_by(|a, b| {
-        let rank_a = a.1 as f64 * 0.10 + a.2;
-        let rank_b = b.1 as f64 * 0.10 + b.2;
+        let rank_a = a.1 as f64 * vote_weight + a.2;
+        let rank_b = b.1 as f64 * vote_weight + b.2;
         rank_b.partial_cmp(&rank_a).unwrap()
     });
 
@@ -635,7 +648,7 @@ fn bpm_agrees(a: f64, b: f64, tolerance: f64) -> bool {
 /// for octave (2x, /2) as a last safety net.
 pub fn resolve_metrical(
     estimate: TempoEstimate,
-    _comb_est: Option<TempoEstimate>,
+    comb_est: Option<TempoEstimate>,
     _onset_env: &[f64],
     _sample_rate: f64,
     min_bpm: f64,
@@ -668,6 +681,11 @@ pub fn resolve_metrical(
             best_bpm = candidate;
         }
     }
+
+    // NOTE: comb filter override for sub-100 BPM was tested and reverted.
+    // The comb says half-BPM in both correct cases (gt=85, comb=85) AND
+    // incorrect cases (gt=140 halftime, comb=70). No reliable discriminant
+    // was found to distinguish them — comb confidence is ~43% in both cases.
 
     TempoEstimate {
         bpm: best_bpm,
