@@ -217,18 +217,14 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
         resolved
     };
 
-    // 5b. Exclusion rules (Sherlock filter): eliminate impossible BPMs
-    //
-    // Rule N-3: if detected BPM > 160 AND D_high < 4/sec → NOT DnB/Jungle
-    //   → force half-time (the fast BPM is a doubling artifact)
-    // Rule N-4: if detected BPM < 80 AND D_low > 2/sec → NOT dubstep/trap
-    //   → force double (the slow BPM is a halving artifact)
+    // 5b. Slow-BPM halving — OPEN PROBLEM
+    // Tracks at 80-95 BPM with offbeat content get doubled to 160-190.
+    // Comb probe halving tested (0.85, 0.95 thresholds) — breaks DnB.
+    // The comb score at half-BPM is too close to full-BPM for BOTH cases.
+    // Next approach: phrase structure analysis (see user's idea below).
     let resolved = {
-        let mut bpm = resolved.bpm;
-
-        // N-3 and N-4 disabled for validation — need to verify on real audio first
-        let _ = &passport; // suppress unused warning
-
+        let bpm = resolved.bpm;
+        let _ = &passport;
         TempoEstimate {
             bpm,
             confidence: resolved.confidence,

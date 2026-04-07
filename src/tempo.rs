@@ -950,7 +950,7 @@ pub fn edm_tempo_zone_score(bpm: f64) -> f64 {
 }
 
 /// Quick comb filter probe: returns the resonance score at a specific BPM.
-fn comb_probe_score(onset_env: &[f64], sample_rate: f64, bpm: f64) -> f64 {
+pub fn comb_probe_score(onset_env: &[f64], sample_rate: f64, bpm: f64) -> f64 {
     let frame_rate = sample_rate / hop_size_for_sr(sample_rate as u32) as f64;
     let n = onset_env.len();
     let period_frames = frame_rate * 60.0 / bpm;
