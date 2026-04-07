@@ -44,6 +44,7 @@ pub struct EstimatorResults {
     pub autocorrelation: Option<TempoEstimate>,
     pub low_band_ac: Option<TempoEstimate>,
     pub hopf: Option<TempoEstimate>,
+    pub spectral: Option<TempoEstimate>,
     pub tempogram: Option<TempoEstimate>,
 }
 
@@ -143,6 +144,7 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
                 autocorrelation: None,
                 low_band_ac: None,
                 hopf: None,
+                spectral: None,
                 tempogram: None,
             },
         };
@@ -160,7 +162,10 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     // Low-band AC: autocorrelation on kick-only signal (immune to triplet hi-hats)
     let low_ac_est = tempo::autocorrelation(&low_env, sr, opts.min_bpm, opts.max_bpm);
 
-    // SBERN: Hopf oscillator bank (computed for diagnostics, integration TBD)
+    // Spectral energy BPM: FFT of RMS envelope (independent from onset detection)
+    let spectral_est = tempo::spectral_energy_bpm(samples, sample_rate, opts.min_bpm, opts.max_bpm);
+
+    // SBERN: Hopf oscillator bank
     let hopf_est = tempo::hopf_oscillator_bank(&onset_env, sr, opts.min_bpm, opts.max_bpm);
 
     // 4. Fusion — 3 core estimators
@@ -252,6 +257,7 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
             autocorrelation: ac_est,
             low_band_ac: low_ac_est,
             hopf: hopf_est,
+            spectral: spectral_est,
             tempogram: None,
         },
     }
@@ -324,6 +330,7 @@ fn consensus_merge(
             autocorrelation: None,
             low_band_ac: None,
             hopf: None,
+            spectral: None,
             tempogram: None,
         });
 

@@ -112,6 +112,9 @@ fn main() {
                 if let Some(h) = result.estimators.hopf {
                     println!("  Hopf SBERN:    {:.2} BPM ({:.0}%)", h.bpm, h.confidence * 100.0);
                 }
+                if let Some(s) = result.estimators.spectral {
+                    println!("  Spectral FFT:  {:.2} BPM ({:.0}%)", s.bpm, s.confidence * 100.0);
+                }
                 println!(
                     "  duration: {:.1}s ({} samples @ {}Hz)",
                     samples.len() as f64 / sample_rate as f64,

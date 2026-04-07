@@ -452,6 +452,114 @@ pub fn tempogram(
     })
 }
 
+/// Spectral periodicity: FFT of the RMS energy envelope.
+///
+/// The simplest possible BPM detector: compute the energy envelope of
+/// the full track (RMS in ~10ms windows), take its FFT, find the dominant
+/// frequency in the BPM range. That frequency IS the tempo.
+///
+/// Completely independent from onset detection — sees the "breathing"
+/// of the track (volume modulation) rather than the "hits" (transients).
+/// This makes it orthogonal to all onset-based estimators.
+pub fn spectral_energy_bpm(
+    samples: &[f32],
+    sample_rate: u32,
+    min_bpm: f64,
+    max_bpm: f64,
+) -> Option<TempoEstimate> {
+    use rustfft::{num_complex::Complex, FftPlanner};
+
+    let sr = sample_rate as f64;
+    let hop = hop_size_for_sr(sample_rate);
+    let n_frames = samples.len() / hop;
+
+    if n_frames < 64 {
+        return None;
+    }
+
+    // Compute RMS energy envelope
+    let mut envelope = Vec::with_capacity(n_frames);
+    for i in 0..n_frames {
+        let start = i * hop;
+        let end = (start + hop).min(samples.len());
+        let rms: f64 = samples[start..end]
+            .iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum::<f64>()
+            / (end - start) as f64;
+        envelope.push(rms.sqrt());
+    }
+
+    // Remove DC (mean) to focus on periodic variation
+    let mean: f64 = envelope.iter().sum::<f64>() / envelope.len() as f64;
+    for v in &mut envelope {
+        *v -= mean;
+    }
+
+    // FFT of the energy envelope
+    let fft_size = n_frames.next_power_of_two();
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(fft_size);
+
+    let mut buffer: Vec<Complex<f64>> = envelope
+        .iter()
+        .map(|&v| Complex::new(v, 0.0))
+        .chain(std::iter::repeat(Complex::new(0.0, 0.0)))
+        .take(fft_size)
+        .collect();
+
+    fft.process(&mut buffer);
+
+    // Convert FFT bins to BPM and find the peak in [min_bpm, max_bpm]
+    let frame_rate = sr / hop as f64;
+    let min_bin = (min_bpm / 60.0 * fft_size as f64 / frame_rate).ceil() as usize;
+    let max_bin = (max_bpm / 60.0 * fft_size as f64 / frame_rate).floor() as usize;
+    let max_bin = max_bin.min(fft_size / 2);
+
+    if min_bin >= max_bin {
+        return None;
+    }
+
+    let mut best_bin = min_bin;
+    let mut best_mag = 0.0f64;
+    let mut total_mag = 0.0f64;
+
+    for bin in min_bin..=max_bin {
+        let mag = (buffer[bin].re * buffer[bin].re + buffer[bin].im * buffer[bin].im).sqrt();
+        total_mag += mag;
+        if mag > best_mag {
+            best_mag = mag;
+            best_bin = bin;
+        }
+    }
+
+    if best_mag < 1e-10 {
+        return None;
+    }
+
+    // Parabolic interpolation for sub-bin precision
+    let refined_bin = if best_bin > min_bin && best_bin < max_bin {
+        let alpha = (buffer[best_bin - 1].re.powi(2) + buffer[best_bin - 1].im.powi(2)).sqrt();
+        let beta = best_mag;
+        let gamma = (buffer[best_bin + 1].re.powi(2) + buffer[best_bin + 1].im.powi(2)).sqrt();
+        let denom = 2.0 * (2.0 * beta - alpha - gamma);
+        if denom.abs() > 1e-10 {
+            best_bin as f64 + (alpha - gamma) / denom
+        } else {
+            best_bin as f64
+        }
+    } else {
+        best_bin as f64
+    };
+
+    let bpm = refined_bin * frame_rate * 60.0 / fft_size as f64;
+
+    let mean_mag = total_mag / (max_bin - min_bin + 1) as f64;
+    let confidence = ((best_mag - mean_mag) / best_mag).clamp(0.0, 1.0);
+
+    Some(TempoEstimate { bpm, confidence })
+}
+
 /// SBERN: Sub-Band Envelope Resonator Network (Hopf Oscillator Bank).
 ///
 /// Instead of measuring onset intervals or combing for periodicity,
