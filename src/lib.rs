@@ -40,6 +40,7 @@ pub struct EstimatorResults {
     pub ioi: Option<TempoEstimate>,
     pub comb: Option<TempoEstimate>,
     pub autocorrelation: Option<TempoEstimate>,
+    pub tempogram: Option<TempoEstimate>,
 }
 
 /// A single tempo estimate from one method.
@@ -134,6 +135,7 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
                 ioi: None,
                 comb: None,
                 autocorrelation: None,
+                tempogram: None,
             },
         };
     }
@@ -141,15 +143,16 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
     // 2. Compute onset strength envelope for tempo estimation
     let onset_env = onset::onset_strength_envelope(samples, sample_rate);
 
-    // 3. Triple estimation
+    // 3. Quad estimation
     // Comb filter uses a smoothed onset envelope for better resonance
     let smoothed_env = tempo::smooth_envelope(&onset_env, 5);
     let ioi_est = tempo::ioi_histogram(&onsets, opts.min_bpm, opts.max_bpm);
     let comb_est = tempo::comb_filter(&smoothed_env, sr, opts.min_bpm, opts.max_bpm);
     let ac_est = tempo::autocorrelation(&onset_env, sr, opts.min_bpm, opts.max_bpm);
+    let tgram_est = tempo::tempogram(&onset_env, sr, opts.min_bpm, opts.max_bpm);
 
-    // 4. Fusion
-    let fused = tempo::fuse_estimates(ioi_est, comb_est, ac_est);
+    // 4. Fusion (tempogram excluded — too correlated with AC, adds redundant votes)
+    let fused = tempo::fuse_estimates(ioi_est, comb_est, ac_est, None);
 
     // 5. Metrical resolution (2x, /2, 4/3, 3/4)
     // Pass comb filter estimate as reference — it's the most octave-reliable estimator
@@ -183,6 +186,7 @@ fn analyze_segment(samples: &[f32], sample_rate: u32, opts: &DetectOptions) -> B
             ioi: ioi_est,
             comb: comb_est,
             autocorrelation: ac_est,
+            tempogram: tgram_est,
         },
     }
 }
@@ -252,6 +256,7 @@ fn consensus_merge(
             ioi: None,
             comb: None,
             autocorrelation: None,
+            tempogram: None,
         });
 
     BpmResult {

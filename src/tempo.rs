@@ -312,6 +312,146 @@ pub fn autocorrelation(
     })
 }
 
+/// Tempogram: windowed autocorrelation for tempo stability analysis.
+///
+/// Splits the onset envelope into overlapping windows and runs autocorrelation
+/// on each. The BPM that appears most consistently across windows wins.
+/// Confidence reflects temporal stability: high if all windows agree,
+/// low if the tempo varies across the track.
+pub fn tempogram(
+    onset_env: &[f64],
+    sample_rate: f64,
+    min_bpm: f64,
+    max_bpm: f64,
+) -> Option<TempoEstimate> {
+    if onset_env.len() < 4 {
+        return None;
+    }
+
+    let frame_rate = sample_rate / hop_size_for_sr(sample_rate as u32) as f64;
+    let window_frames = (8.0 * frame_rate) as usize; // 8-second windows
+    let hop_frames = window_frames / 2;              // 50% overlap
+
+    if onset_env.len() < window_frames {
+        // Track too short for windowed analysis — fall back to global AC
+        return autocorrelation(onset_env, sample_rate, min_bpm, max_bpm);
+    }
+
+    let min_lag = (frame_rate * 60.0 / max_bpm) as usize;
+    let max_lag = ((frame_rate * 60.0 / min_bpm) as usize).min(window_frames / 2);
+
+    if min_lag >= max_lag {
+        return None;
+    }
+
+    // Collect per-window BPM estimates
+    let mut window_bpms: Vec<f64> = Vec::new();
+    let mut pos = 0;
+
+    while pos + window_frames <= onset_env.len() {
+        let window = &onset_env[pos..pos + window_frames];
+
+        // Compute mean
+        let mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+
+        // Autocorrelation at lag 0
+        let mut acf0 = 0.0f64;
+        for &v in window {
+            let d = v - mean;
+            acf0 += d * d;
+        }
+
+        if acf0 < 1e-10 {
+            pos += hop_frames;
+            continue;
+        }
+
+        // Find best lag
+        let mut best_lag = min_lag;
+        let mut best_val = f64::NEG_INFINITY;
+
+        for lag in min_lag..=max_lag.min(window.len() / 2) {
+            let mut sum = 0.0f64;
+            for i in 0..window.len() - lag {
+                sum += (window[i] - mean) * (window[i + lag] - mean);
+            }
+            let acf = sum / acf0;
+            if acf > best_val {
+                best_val = acf;
+                best_lag = lag;
+            }
+        }
+
+        // Parabolic interpolation
+        let refined_lag = if best_lag > min_lag && best_lag < max_lag.min(window.len() / 2) {
+            let lo_lag = best_lag - 1;
+            let hi_lag = best_lag + 1;
+            let mut sum_lo = 0.0f64;
+            let mut sum_hi = 0.0f64;
+            for i in 0..window.len() - hi_lag {
+                let v = window[i] - mean;
+                sum_lo += v * (window[i + lo_lag] - mean);
+                sum_hi += v * (window[i + hi_lag] - mean);
+            }
+            let alpha = sum_lo / acf0;
+            let beta = best_val;
+            let gamma = sum_hi / acf0;
+            let denom = 2.0 * (2.0 * beta - alpha - gamma);
+            if denom.abs() > 1e-10 {
+                best_lag as f64 + (alpha - gamma) / denom
+            } else {
+                best_lag as f64
+            }
+        } else {
+            best_lag as f64
+        };
+
+        let bpm = frame_rate * 60.0 / refined_lag;
+        if bpm >= min_bpm && bpm <= max_bpm {
+            window_bpms.push(bpm);
+        }
+
+        pos += hop_frames;
+    }
+
+    if window_bpms.is_empty() {
+        return None;
+    }
+
+    // Find the most common BPM (cluster by 4% tolerance)
+    let mut best_bpm = window_bpms[0];
+    let mut best_count = 0usize;
+
+    for &candidate in &window_bpms {
+        let count = window_bpms
+            .iter()
+            .filter(|&&b| (b - candidate).abs() / candidate < 0.04)
+            .count();
+        if count > best_count {
+            best_count = count;
+            best_bpm = candidate;
+        }
+    }
+
+    // Refined BPM: median of the agreeing cluster
+    let mut cluster: Vec<f64> = window_bpms
+        .iter()
+        .filter(|&&b| (b - best_bpm).abs() / best_bpm < 0.04)
+        .copied()
+        .collect();
+    cluster.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_bpm = cluster[cluster.len() / 2];
+
+    // Confidence = fraction of windows that agree with the majority
+    let agreement = cluster.len() as f64 / window_bpms.len() as f64;
+    let confidence = agreement.clamp(0.0, 1.0);
+
+    Some(TempoEstimate {
+        bpm: median_bpm,
+        confidence,
+    })
+}
+
 /// Fuse three tempo estimates using **metrical-aware** clustering.
 ///
 /// Two BPMs "agree" if they are within 4% of each other after normalizing
@@ -327,9 +467,10 @@ pub fn fuse_estimates(
     ioi: Option<TempoEstimate>,
     comb: Option<TempoEstimate>,
     ac: Option<TempoEstimate>,
+    tgram: Option<TempoEstimate>,
 ) -> TempoEstimate {
     // Tag each estimate with its source priority (lower = preferred for metrical choice)
-    // IOI=0 (best octave), Comb=1, AC=2 (worst octave)
+    // IOI=0 (best octave), Comb=1, Tempogram=2, AC=3 (worst octave)
     let mut tagged: Vec<(TempoEstimate, u8)> = Vec::new();
     if let Some(e) = ioi {
         tagged.push((e, 0));
@@ -337,8 +478,11 @@ pub fn fuse_estimates(
     if let Some(e) = comb {
         tagged.push((e, 1));
     }
-    if let Some(e) = ac {
+    if let Some(e) = tgram {
         tagged.push((e, 2));
+    }
+    if let Some(e) = ac {
+        tagged.push((e, 3));
     }
 
     if tagged.is_empty() {
@@ -854,7 +998,7 @@ mod tests {
             bpm: 119.5,
             confidence: 0.6,
         });
-        let fused = fuse_estimates(a, b, c);
+        let fused = fuse_estimates(a, b, c, None);
         assert!(
             (fused.bpm - 120.0).abs() < 2.0,
             "Fused: expected ~120, got {}",
@@ -877,7 +1021,7 @@ mod tests {
             bpm: 160.0,
             confidence: 0.2,
         });
-        let fused = fuse_estimates(a, b, c);
+        let fused = fuse_estimates(a, b, c, None);
         // Should pick the highest confidence
         assert!(
             (fused.bpm - 120.0).abs() < 5.0,

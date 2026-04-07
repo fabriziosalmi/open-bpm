@@ -621,6 +621,7 @@ fn estimator_agreement_on_clean_signal() {
         result.estimators.ioi.map(|e| e.bpm),
         result.estimators.comb.map(|e| e.bpm),
         result.estimators.autocorrelation.map(|e| e.bpm),
+        result.estimators.tempogram.map(|e| e.bpm),
     ]
     .iter()
     .filter_map(|e| *e)
