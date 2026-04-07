@@ -18,6 +18,7 @@
 
 pub mod beat;
 pub mod bouncer;
+pub mod metalearner;
 pub mod onset;
 pub mod spectral;
 pub mod tempo;
