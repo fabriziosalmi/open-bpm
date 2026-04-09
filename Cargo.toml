@@ -22,6 +22,11 @@ name = "validate_metrics"
 path = "src/bin/validate_metrics.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "extract_features"
+path = "src/bin/extract_features.rs"
+required-features = ["cli"]
+
 [features]
 default = ["cli"]
 cli = ["dep:symphonia", "dep:clap"]

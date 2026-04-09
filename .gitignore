@@ -16,3 +16,19 @@ bench/benchmark_results.tsv
 INTEGRATION.md
 bench/mixi-bench/
 bench/compare_mixi.*
+
+# Python venv and external datasets
+.venv/
+__pycache__/
+*.pyc
+bench/ballroom-audio/
+bench/ballroom-annotations/
+bench/ballroom_results.tsv
+bench/gtzan-audio/
+bench/gtzan-annotations/
+bench/gtzan_results.tsv
+bench/gtzan_results_fileids.tsv
+
+# Extraction logs (always regenerable from source)
+bench/*.log
+~/mir_datasets/
