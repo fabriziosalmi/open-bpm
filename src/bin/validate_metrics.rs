@@ -1,5 +1,11 @@
-//! Validation tool: computes harmonic_template_score and mdl_score at
-//! ground-truth BPM vs detected BPM for each track in the baseline TSV.
+//! Validation tool: computes Round 3 candidate judge metrics at
+//! ground-truth, detected, half, and double BPMs for each track in the baseline TSV.
+//!
+//! Metrics validated (all return higher = better):
+//!   - phase_coherence_r:    angular concentration of onset phases
+//!   - empty_slot_score:     fraction of grid slots that contain an onset
+//!   - median_energy_ratio:  on-grid vs off-grid energy separation
+//!   - ioi_multiple_score:   fraction of IOIs that fit integer multiples of T
 //!
 //! Usage:
 //!   cargo run --release --bin validate_metrics -- <baseline.tsv> <audio_dir> > validation.tsv
@@ -20,8 +26,14 @@ fn main() {
     let baseline = std::fs::read_to_string(baseline_path)
         .expect("Failed to read baseline TSV");
 
-    // Output header
-    println!("track_id\tgt_bpm\tdet_bpm\tacc1\tht_at_gt\tht_at_det\tht_at_half\tht_at_double\tmdl_at_gt\tmdl_at_det\tmdl_at_half\tmdl_at_double");
+    // Output header: 4 metrics × 4 BPM points = 16 score columns
+    println!(
+        "track_id\tgt_bpm\tdet_bpm\tacc1\t\
+         pc_gt\tpc_det\tpc_half\tpc_double\t\
+         es_gt\tes_det\tes_half\tes_double\t\
+         me_gt\tme_det\tme_half\tme_double\t\
+         io_gt\tio_det\tio_half\tio_double"
+    );
 
     let mut count = 0;
     let mut errors = 0;
@@ -64,27 +76,48 @@ fn main() {
         };
 
         let sr = sample_rate as f64;
-        let onset_env = onset::onset_strength_envelope(&samples, sample_rate);
+        let _ = sr;
         let onsets = onset::detect_onsets_multiband(&samples, sample_rate);
-        let duration = samples.len() as f64 / sr;
+        let duration = samples.len() as f64 / sample_rate as f64;
 
         let half_bpm = det_bpm / 2.0;
         let double_bpm = det_bpm * 2.0;
 
-        let ht_at_gt = tempo::harmonic_template_score(&onset_env, sr, gt_bpm);
-        let ht_at_det = tempo::harmonic_template_score(&onset_env, sr, det_bpm);
-        let ht_at_half = tempo::harmonic_template_score(&onset_env, sr, half_bpm);
-        let ht_at_double = tempo::harmonic_template_score(&onset_env, sr, double_bpm);
-        let mdl_at_gt = tempo::mdl_score(&onsets, gt_bpm, duration);
-        let mdl_at_det = tempo::mdl_score(&onsets, det_bpm, duration);
-        let mdl_at_half = tempo::mdl_score(&onsets, half_bpm, duration);
-        let mdl_at_double = tempo::mdl_score(&onsets, double_bpm, duration);
+        // Phase coherence
+        let pc_gt = tempo::phase_coherence_r(&onsets, gt_bpm);
+        let pc_det = tempo::phase_coherence_r(&onsets, det_bpm);
+        let pc_half = tempo::phase_coherence_r(&onsets, half_bpm);
+        let pc_double = tempo::phase_coherence_r(&onsets, double_bpm);
+
+        // Empty slot score
+        let es_gt = tempo::empty_slot_score(&onsets, gt_bpm, duration);
+        let es_det = tempo::empty_slot_score(&onsets, det_bpm, duration);
+        let es_half = tempo::empty_slot_score(&onsets, half_bpm, duration);
+        let es_double = tempo::empty_slot_score(&onsets, double_bpm, duration);
+
+        // Median energy ratio
+        let me_gt = tempo::median_energy_ratio_score(&onsets, gt_bpm);
+        let me_det = tempo::median_energy_ratio_score(&onsets, det_bpm);
+        let me_half = tempo::median_energy_ratio_score(&onsets, half_bpm);
+        let me_double = tempo::median_energy_ratio_score(&onsets, double_bpm);
+
+        // IOI multiple score
+        let io_gt = tempo::ioi_multiple_score(&onsets, gt_bpm);
+        let io_det = tempo::ioi_multiple_score(&onsets, det_bpm);
+        let io_half = tempo::ioi_multiple_score(&onsets, half_bpm);
+        let io_double = tempo::ioi_multiple_score(&onsets, double_bpm);
 
         println!(
-            "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}",
+            "{}\t{}\t{}\t{}\t\
+             {:.4}\t{:.4}\t{:.4}\t{:.4}\t\
+             {:.4}\t{:.4}\t{:.4}\t{:.4}\t\
+             {:.4}\t{:.4}\t{:.4}\t{:.4}\t\
+             {:.4}\t{:.4}\t{:.4}\t{:.4}",
             track_id, gt_bpm, det_bpm, acc1,
-            ht_at_gt, ht_at_det, ht_at_half, ht_at_double,
-            mdl_at_gt, mdl_at_det, mdl_at_half, mdl_at_double
+            pc_gt, pc_det, pc_half, pc_double,
+            es_gt, es_det, es_half, es_double,
+            me_gt, me_det, me_half, me_double,
+            io_gt, io_det, io_half, io_double
         );
 
         count += 1;

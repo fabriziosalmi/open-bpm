@@ -1323,6 +1323,265 @@ pub fn mdl_score(onsets: &[Onset], bpm: f64, duration: f64) -> f64 {
     model_cost + data_cost * 10.0 + coverage_penalty
 }
 
+// =============================================================================
+// Round 3 candidate judge metrics (deterministic, zero free parameters)
+// =============================================================================
+//
+// All four metrics share the same contract:
+//   - Input: onsets and a candidate BPM
+//   - Output: a score in [0, 1] where HIGHER = better fit
+//   - Pure functions, no internal thresholds tuned to data
+//
+// They are designed to be ORTHOGONAL signals:
+//   - phase_coherence_r:    angular concentration on the unit circle
+//   - empty_slot_ratio:     combinatorial coverage of grid slots
+//   - median_energy_ratio:  robust energy at on-grid vs off-grid onsets
+//   - ioi_multiple_score:   arithmetic fit of IOIs to integer multiples
+//
+// These are validated empirically via src/bin/validate_metrics.rs before
+// any pipeline integration. See BENCHMARK.md section 8.
+
+/// Phase coherence R: circular mean of onset phases at the candidate period.
+///
+/// Maps each onset time to a unit-circle point at angle 2π·(t mod T)/T,
+/// then returns the magnitude of the mean vector. R = 1 means all onsets
+/// are at the same phase (perfect lock); R = 0 means uniform distribution
+/// (no rhythmic structure at this BPM).
+///
+/// Mathematically equivalent to the Rayleigh statistic for circular data.
+/// Pure arithmetic: 2 trig calls per onset, no FFT, no histograms, no thresholds.
+///
+/// VALIDATION (664 GiantSteps tracks, Round 3, 2026-04-09):
+///   PASS defense: 12.7%  (det > half AND > double)
+///   FAIL recovery: 54.6% (gt > det)
+///   Octave doubling: 63% correctly identifies slower gt (signal exists but weak)
+/// Across all 678 tracks, PC at double-BPM is higher than PC at det-BPM in 78%
+/// of cases. This is structural: at integer-multiple BPMs the same periodic
+/// pattern exists, and the finer grid catches more random transients.
+/// Not integratable as a judge -- kept as a building block.
+pub fn phase_coherence_r(onsets: &[Onset], bpm: f64) -> f64 {
+    if onsets.is_empty() || bpm <= 0.0 {
+        return 0.0;
+    }
+    let period = 60.0 / bpm;
+    let two_pi = std::f64::consts::TAU;
+    let mut sum_re = 0.0f64;
+    let mut sum_im = 0.0f64;
+    for o in onsets {
+        let phase = (o.time.rem_euclid(period)) / period;
+        let angle = two_pi * phase;
+        let (s, c) = angle.sin_cos();
+        sum_re += c;
+        sum_im += s;
+    }
+    let mag = (sum_re * sum_re + sum_im * sum_im).sqrt();
+    (mag / onsets.len() as f64).clamp(0.0, 1.0)
+}
+
+/// Find the optimal phase offset (in seconds) for a given period using the
+/// circular mean of onset phases. This is the offset that aligns the grid
+/// with the actual downbeats, regardless of where t=0 falls.
+///
+/// Returns offset in [0, period). Used internally by metrics that need
+/// phase-invariant grid alignment.
+fn optimal_phase_offset(onsets: &[Onset], period: f64) -> f64 {
+    if onsets.is_empty() || period <= 0.0 {
+        return 0.0;
+    }
+    let two_pi = std::f64::consts::TAU;
+    let mut sum_re = 0.0f64;
+    let mut sum_im = 0.0f64;
+    for o in onsets {
+        let phase = (o.time.rem_euclid(period)) / period;
+        let angle = two_pi * phase;
+        let (s, c) = angle.sin_cos();
+        sum_re += c;
+        sum_im += s;
+    }
+    if sum_re.abs() < 1e-12 && sum_im.abs() < 1e-12 {
+        return 0.0;
+    }
+    let mean_angle = sum_im.atan2(sum_re); // [-π, π]
+    let mean_phase = mean_angle / two_pi; // [-0.5, 0.5]
+    let offset = mean_phase * period;
+    // Wrap to [0, period)
+    ((offset % period) + period) % period
+}
+
+/// Empty slot ratio: fraction of grid slots that contain NO onset.
+///
+/// At the correct BPM, most grid slots should be filled (energy at every beat).
+/// At the wrong BPM (especially octave doubling), many grid slots are empty
+/// because the actual beats fall between two grid points.
+///
+/// Returns 1 - empty_ratio so that HIGHER = better, consistent with other metrics.
+/// Phase-invariant: uses circular mean to align the grid with onset phases.
+/// Tolerance is fixed at 30ms (≈ human jitter floor for tapping).
+///
+/// VALIDATION (664 GiantSteps tracks, Round 3, 2026-04-09):
+///   PASS defense: 25.8%, FAIL recovery: 47.8%
+/// Suffers from the BPM-relative bias: at higher BPMs, the 30ms tolerance
+/// is a larger fraction of the period, so more onsets fall in tolerance and
+/// the metric prefers the higher candidate. Not integratable as a judge.
+pub fn empty_slot_score(onsets: &[Onset], bpm: f64, duration: f64) -> f64 {
+    if onsets.is_empty() || bpm <= 0.0 || duration <= 0.0 {
+        return 0.0;
+    }
+    let period = 60.0 / bpm;
+    let n_slots = (duration / period) as usize;
+    if n_slots < 2 {
+        return 0.0;
+    }
+    let tolerance = 0.030;
+    let offset = optimal_phase_offset(onsets, period);
+
+    let mut filled = vec![false; n_slots + 1];
+    for o in onsets {
+        let t = o.time - offset;
+        if t < -tolerance {
+            continue;
+        }
+        let nearest = (t / period).round();
+        if nearest < 0.0 {
+            continue;
+        }
+        let idx = nearest as usize;
+        if idx > n_slots {
+            continue;
+        }
+        let grid_time = nearest * period;
+        if (t - grid_time).abs() <= tolerance {
+            filled[idx] = true;
+        }
+    }
+    let filled_count = filled.iter().filter(|&&f| f).count();
+    let total = n_slots + 1;
+    filled_count as f64 / total as f64
+}
+
+/// Median energy ratio: median strength of on-grid onsets vs off-grid onsets.
+///
+/// At the correct BPM, on-grid onsets (the actual beats) should be systematically
+/// stronger than off-grid onsets (ghost notes, syncopation, transients between beats).
+/// Uses median (not mean) to be robust to outliers.
+///
+/// Returns med_on / (med_on + med_off) ∈ [0, 1]. Higher = better separation.
+/// Phase-invariant via circular mean offset.
+///
+/// VALIDATION (664 GiantSteps tracks, Round 3, 2026-04-09):
+///   PASS defense: 14.2%, FAIL recovery: 49.8%
+/// Same BPM-relative tolerance bias as empty_slot_score. Additionally, in
+/// electronic music many ghost transients carry significant strength, so the
+/// median energy gap between on-grid and off-grid onsets is small.
+/// Not integratable as a judge.
+pub fn median_energy_ratio_score(onsets: &[Onset], bpm: f64) -> f64 {
+    if onsets.len() < 4 || bpm <= 0.0 {
+        return 0.0;
+    }
+    let period = 60.0 / bpm;
+    let tolerance = 0.030;
+    let offset = optimal_phase_offset(onsets, period);
+
+    let mut on_energies: Vec<f64> = Vec::new();
+    let mut off_energies: Vec<f64> = Vec::new();
+
+    for o in onsets {
+        let t = o.time - offset;
+        // Distance to nearest grid point
+        let phase = (t.rem_euclid(period)) / period; // [0, 1)
+        let dist_norm = phase.min(1.0 - phase); // [0, 0.5]
+        let dist_seconds = dist_norm * period;
+        if dist_seconds <= tolerance {
+            on_energies.push(o.strength);
+        } else {
+            off_energies.push(o.strength);
+        }
+    }
+
+    if on_energies.is_empty() {
+        return 0.0;
+    }
+    if off_energies.is_empty() {
+        return 1.0;
+    }
+
+    on_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    off_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let med_on = on_energies[on_energies.len() / 2];
+    let med_off = off_energies[off_energies.len() / 2];
+
+    let total = med_on + med_off;
+    if total < 1e-12 {
+        return 0.0;
+    }
+    (med_on / total).clamp(0.0, 1.0)
+}
+
+/// IOI multiple score: fraction of inter-onset intervals that are integer
+/// multiples or unit fractions of the candidate beat period.
+///
+/// For each consecutive IOI, checks if it equals k·T or T/k for k ∈ {1,2,3,4}
+/// within a 30ms tolerance. The correct BPM should produce IOIs that are
+/// almost all clean integer ratios of T (kicks every beat → T, every other
+/// beat → 2T, hi-hats every half beat → T/2, triplets → T/3).
+///
+/// Wrong BPMs produce a low score because random IOIs don't match the
+/// candidate's integer lattice.
+///
+/// VALIDATION (664 GiantSteps tracks, Round 3, 2026-04-09):
+///   PASS defense: 1.1%, FAIL recovery: 38.2%
+///   vs HALF defense: 100% (perfect)
+///   vs DOUBLE defense: 1.1% (catastrophic)
+/// The 100% vs-half score is misleading -- it's a pure artifact of the
+/// BPM-relative tolerance bias: at higher BPMs, the integer lattice is
+/// finer and more random IOIs fit. The metric is dominated by tolerance
+/// arithmetic, not by actual rhythmic structure.
+/// Not integratable as a judge.
+pub fn ioi_multiple_score(onsets: &[Onset], bpm: f64) -> f64 {
+    if onsets.len() < 4 || bpm <= 0.0 {
+        return 0.0;
+    }
+    let period = 60.0 / bpm;
+    let tolerance = 0.030;
+
+    // Collect all consecutive IOIs (skip degenerate ones)
+    let mut iois: Vec<f64> = Vec::with_capacity(onsets.len() - 1);
+    for w in onsets.windows(2) {
+        let ioi = w[1].time - w[0].time;
+        if ioi > 0.001 && ioi < 5.0 {
+            iois.push(ioi);
+        }
+    }
+    if iois.is_empty() {
+        return 0.0;
+    }
+
+    // For each IOI, check if it matches k*T or T/k for k=1..=4
+    let mut matched = 0usize;
+    for &ioi in &iois {
+        let mut is_match = false;
+        for k in 1..=4 {
+            let kf = k as f64;
+            let target_mult = kf * period;
+            if (ioi - target_mult).abs() <= tolerance {
+                is_match = true;
+                break;
+            }
+            let target_div = period / kf;
+            if (ioi - target_div).abs() <= tolerance {
+                is_match = true;
+                break;
+            }
+        }
+        if is_match {
+            matched += 1;
+        }
+    }
+
+    matched as f64 / iois.len() as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

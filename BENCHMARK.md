@@ -210,11 +210,53 @@ Both metrics were integrated into a cascaded rejection scheme: when fusion confi
 
 **Result on full GiantSteps benchmark:** Acc1 dropped from 68.8% to **32.0%**. The pipeline was reverted to baseline immediately. The validation step (above) was added afterward to identify the root cause.
 
-### 8.5 Lessons Learned
+### 8.5 Round 3: Four New Deterministic Metrics
 
-1. **Empirical validation is mandatory before pipeline integration.** Theoretical soundness does not guarantee practical discrimination.
-2. **The current pipeline is at a local optimum.** Multiple parametric tweaks (Round 1: include low_band_ac in fusion, comb probe in resolve_metrical, remove triplet ratios from METRICAL_RATIOS, extend phrase halving range) all produced net regressions when tested on the full benchmark.
-3. **Further accuracy gains likely require external training data** (Ballroom, GTZAN, Hainsworth) and a learned judge router, rather than further hand-tuned heuristics.
+After Round 2, four new candidate metrics were designed with the explicit goal of being deterministic, parameter-free, and orthogonal in the signals they capture:
+
+| Metric | Mathematical basis | What it measures |
+|---|---|---|
+| **Phase coherence R** | Rayleigh statistic / circular mean | Angular concentration of onsets at the candidate period |
+| **Empty slot score** | Combinatorial coverage | Fraction of grid slots filled by at least one onset |
+| **Median energy ratio** | Robust statistics | Energy separation between on-grid and off-grid onsets |
+| **IOI multiple score** | Arithmetic divisibility | Fraction of inter-onset intervals fitting integer ratios of T |
+
+All four were validated empirically on the same 664 tracks before any integration. Results:
+
+| Metric | PASS defense | FAIL recovery | Verdict |
+|---|---|---|---|
+| Phase coherence R | 12.7% | 54.6% | Failed |
+| Empty slot score | 25.8% | 47.8% | Failed |
+| Median energy ratio | 14.2% | 49.8% | Failed |
+| IOI multiple score | 1.1% | 38.2% | Failed |
+
+None passed the 80% / 60% threshold. None integratable.
+
+### 8.6 The Structural Wall
+
+A diagnostic analysis revealed the underlying cause. Across all 678 evaluated rows, **phase coherence at the doubled BPM was higher than at the detected BPM in 78% of cases** (and more than 2x higher in 56% of cases). This is not noise -- it is a structural property:
+
+**At any correct BPM, the same musical content is also periodic at integer multiples of that BPM.** A kick drum at 140 BPM is mathematically also "phase-locked" to a 280 BPM grid (every other slot is filled). When evaluated at the doubled BPM:
+
+- The grid spacing is half, so the fixed 30ms tolerance becomes a larger fraction of the period
+- Random transients (hi-hat tails, snare crack, ghost notes) have twice as many slots to potentially align with
+- The doubled BPM mathematically *contains* the structure of the correct BPM as a subset
+
+This implies a **fundamental limit on onset-only signal processing**: no scalar metric defined as a function of `(onset_times, candidate_period)` alone can reliably distinguish a correct BPM from its integer-multiple harmonics, because the harmonic structure is not observable from raw onset positions.
+
+### 8.7 Implications
+
+The 68.8% Acc1 baseline appears to represent the practical ceiling of onset-only signal processing on this dataset. Further accuracy gains require information that the onset domain does not contain:
+
+1. **Source separation** -- isolate the kick from other instruments before computing periodicities. Current low-band autocorrelation approximates this but adding it to fusion regressed in Round 1.
+2. **Higher-level features** -- chord change detection, structural boundary analysis, downbeat estimation. These require independent analysis pipelines.
+3. **Learned judge router** -- train a small classifier on (track features, candidate BPMs, ground truth) tuples from external datasets (Ballroom, GTZAN, Hainsworth) to learn which estimator to trust per track type.
+
+### 8.8 Lessons Learned
+
+1. **Empirical validation is mandatory before pipeline integration.** Theoretical soundness does not guarantee practical discrimination. Three rounds of attempts confirm this.
+2. **Hand-tuned thresholds are an antipattern at this point.** Every parametric tweak (Round 1) and every composite scoring scheme (Round 2) regresses because the system is at a local optimum reachable from this design space.
+3. **The structural wall is real.** Round 3 proved by direct measurement that onset-only metrics cannot distinguish a fundamental from its harmonics. Going beyond requires either source separation or external supervision.
 
 ---
 
