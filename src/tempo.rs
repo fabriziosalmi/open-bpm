@@ -1,6 +1,6 @@
 //! Tempo estimation: IOI histogram, comb filter, autocorrelation, and fusion.
 
-use crate::onset::{self, Onset};
+use crate::onset::Onset;
 use crate::TempoEstimate;
 
 // --- Constants ---
@@ -858,11 +858,6 @@ fn pick_metrical_level(cluster: &[(TempoEstimate, u8)]) -> f64 {
     levels[0].0
 }
 
-/// Check if two BPM values agree (within tolerance, also checking octave relationships).
-fn bpm_agrees(a: f64, b: f64, tolerance: f64) -> bool {
-    (a - b).abs() < tolerance
-}
-
 /// Post-fusion metrical sanity check.
 ///
 /// The metrical-aware fusion handles octave/triplet resolution inside
@@ -870,7 +865,7 @@ fn bpm_agrees(a: f64, b: f64, tolerance: f64) -> bool {
 /// for octave (2x, /2) as a last safety net.
 pub fn resolve_metrical(
     estimate: TempoEstimate,
-    comb_est: Option<TempoEstimate>,
+    _comb_est: Option<TempoEstimate>,
     _onset_env: &[f64],
     _sample_rate: f64,
     min_bpm: f64,
@@ -903,11 +898,6 @@ pub fn resolve_metrical(
             best_bpm = candidate;
         }
     }
-
-    // NOTE: comb filter override for sub-100 BPM was tested and reverted.
-    // The comb says half-BPM in both correct cases (gt=85, comb=85) AND
-    // incorrect cases (gt=140 halftime, comb=70). No reliable discriminant
-    // was found to distinguish them — comb confidence is ~43% in both cases.
 
     TempoEstimate {
         bpm: best_bpm,
@@ -1140,6 +1130,197 @@ fn find_peak_parabolic(histogram: &[f64], min_bpm: f64) -> Option<TempoEstimate>
         bpm,
         confidence: confidence.clamp(0.0, 1.0),
     })
+}
+
+/// Harmonic template matching on the autocorrelation function.
+///
+/// For a candidate lag L, measures how well the ACF matches a harmonic template:
+/// the true fundamental has decreasing harmonics at 2L, 3L, 4L.
+/// An octave error (detecting 2x the true BPM, i.e. L/2 is the true fundamental)
+/// shows the opposite pattern: the "fundamental" at L is weaker than the peak at L/2.
+///
+/// Returns a score in [-1, 1]:
+///   positive = L looks like a true fundamental (harmonics decay naturally)
+///   negative = L looks like a harmonic of a lower fundamental
+///   near zero = ambiguous
+///
+/// VALIDATION RESULTS (664 GiantSteps tracks, 2026-04-09):
+/// On 457 PASS tracks (where the detected BPM IS correct):
+///   - HT correctly defends det over half/double: 7%
+///   - HT incorrectly prefers double over correct: 81%
+///   - HT incorrectly prefers half over correct: 41%
+/// On 207 FAIL tracks: HT prefers wrong answer in 69% of cases.
+///
+/// CONCLUSION: This implementation is BROKEN -- the clamping at 1.0 in
+/// `(h2/h1).min(1.0)` destroys the signal that distinguishes octave errors.
+/// Do NOT use this in production. Kept as starting point for future redesign.
+/// A correct version should compare h1 vs max(h2, sub) without clamping.
+pub fn harmonic_template_score(onset_env: &[f64], sample_rate: f64, bpm: f64) -> f64 {
+    if onset_env.len() < 4 || bpm <= 0.0 {
+        return 0.0;
+    }
+
+    let frame_rate = sample_rate / hop_size_for_sr(sample_rate as u32) as f64;
+    let lag = (frame_rate * 60.0 / bpm) as usize;
+    let n = onset_env.len();
+
+    if lag < 2 || lag >= n / 2 {
+        return 0.0;
+    }
+
+    // Compute raw (unweighted) ACF at specific lags
+    let mean: f64 = onset_env.iter().sum::<f64>() / n as f64;
+    let mut acf0 = 0.0f64;
+    for &v in onset_env {
+        let d = v - mean;
+        acf0 += d * d;
+    }
+    if acf0 < 1e-10 {
+        return 0.0;
+    }
+
+    let acf_at = |target_lag: usize| -> f64 {
+        if target_lag >= n / 2 {
+            return 0.0;
+        }
+        let mut sum = 0.0f64;
+        for i in 0..n - target_lag {
+            sum += (onset_env[i] - mean) * (onset_env[i + target_lag] - mean);
+        }
+        sum / acf0
+    };
+
+    // Measure harmonics: at 1x, 2x, 3x, 4x the candidate lag
+    let h1 = acf_at(lag);          // fundamental
+    let h2 = acf_at(lag * 2);      // 2nd harmonic
+    let h3 = acf_at(lag * 3);      // 3rd harmonic
+    let h4 = acf_at(lag * 4);      // 4th harmonic
+
+    // Also check the sub-harmonic at lag/2 (would be the actual fundamental if we're an octave high)
+    let sub = if lag / 2 >= 2 { acf_at(lag / 2) } else { 0.0 };
+
+    // A true fundamental has:
+    // - Strong h1
+    // - Harmonics h2, h3, h4 present but progressively weaker
+    // - Sub-harmonic (lag/2) weaker than h1
+    //
+    // An octave error has:
+    // - h1 moderate (it's the 2nd harmonic of the true fundamental)
+    // - sub (lag/2) stronger or comparable to h1
+    // - h2 strong (it's the 4th harmonic)
+
+    if h1.abs() < 1e-10 {
+        return 0.0;
+    }
+
+    // Score 1: harmonic decay -- are harmonics progressively weaker?
+    let decay_score: f64 = if h1 > 1e-10 {
+        let d2 = (h2 / h1).min(1.0);
+        let d3 = (h3 / h1).min(1.0);
+        let d4 = (h4 / h1).min(1.0);
+        // Ideal: d2 > d3 > d4, all < 1.0
+        // Score positive if monotonically decreasing
+        let monotonic = if d2 >= d3 && d3 >= d4 { 0.3 } else { -0.1 };
+        // Score positive if harmonics are present (not zero) but weaker
+        let presence = if d2 > 0.1 && d3 > 0.05 { 0.2 } else { 0.0 };
+        monotonic + presence
+    } else {
+        0.0
+    };
+
+    // Score 2: sub-harmonic test -- is lag/2 weaker than lag?
+    let sub_score = if sub > h1 * 0.9 {
+        // Sub-harmonic is as strong or stronger → we might be an octave too high
+        -0.5
+    } else if sub < h1 * 0.5 {
+        // Sub-harmonic clearly weaker → we're likely the true fundamental
+        0.3
+    } else {
+        0.0
+    };
+
+    (decay_score + sub_score).clamp(-1.0f64, 1.0)
+}
+
+/// Minimum Description Length scoring for BPM candidates.
+///
+/// For a given BPM candidate, models the onset sequence as "deviations from
+/// a regular grid at that BPM". The candidate that requires the fewest total
+/// bits to encode (grid description + residuals) is the best BPM.
+///
+/// MDL naturally penalizes octave doubling: halving the BPM halves the grid
+/// points but roughly doubles the residuals, so the total cost balances out
+/// correctly.
+///
+/// Returns a score where LOWER = better (fewer bits to describe).
+///
+/// VALIDATION RESULTS (664 GiantSteps tracks, 2026-04-09):
+/// On 457 PASS tracks: MDL correctly defends det only 29% of the time.
+/// On 207 FAIL tracks: MDL prefers GT in 52% of cases (essentially random).
+///
+/// CONCLUSION: This implementation does NOT discriminate well. The residual
+/// magnitudes (~10^5 -- 10^6) are not properly normalized by onset count or
+/// duration, and the model_cost term is dominated by data_cost. Kept as
+/// starting point for future redesign with proper normalization.
+pub fn mdl_score(onsets: &[Onset], bpm: f64, duration: f64) -> f64 {
+    if onsets.len() < 4 || bpm <= 0.0 || duration <= 0.0 {
+        return f64::MAX;
+    }
+
+    let period = 60.0 / bpm;
+    let n_beats = (duration / period) as usize;
+    if n_beats < 2 {
+        return f64::MAX;
+    }
+
+    // Cost of the model (grid): log2(n_beats) bits to encode the grid resolution
+    let model_cost = (n_beats as f64).log2();
+
+    // Cost of residuals: for each onset, find its distance to the nearest grid point,
+    // then encode these residuals
+    let mut total_residual = 0.0f64;
+    let mut matched_onsets = 0usize;
+
+    for onset in onsets {
+        let t = onset.time;
+        // Find nearest grid point
+        let nearest_beat = (t / period).round();
+        let nearest_time = nearest_beat * period;
+        let residual = (t - nearest_time).abs();
+
+        // Residual normalized by period (0 = on grid, 0.5 = maximally off grid)
+        let norm_residual = (residual / period).min(0.5);
+
+        // Weight by onset strength (strong onsets should be on-grid)
+        total_residual += norm_residual * onset.strength;
+        matched_onsets += 1;
+    }
+
+    if matched_onsets == 0 {
+        return f64::MAX;
+    }
+
+    // Average residual per onset
+    let avg_residual = total_residual / matched_onsets as f64;
+
+    // Data cost: residuals encoded with precision proportional to their magnitude
+    // Using -log2(precision) as a proxy for bits needed
+    let data_cost = avg_residual * matched_onsets as f64;
+
+    // Also penalize unmatched grid points (beats with no nearby onset)
+    // This prevents the trivial solution of very slow BPM (few grid points, high residuals)
+    let onset_density = onsets.len() as f64 / n_beats as f64;
+    let coverage_penalty = if onset_density < 0.5 {
+        // Too few onsets per beat → grid is too dense → wrong BPM
+        2.0
+    } else if onset_density > 4.0 {
+        // Way too many onsets per beat → grid too sparse → wrong BPM
+        1.0
+    } else {
+        0.0
+    };
+
+    model_cost + data_cost * 10.0 + coverage_penalty
 }
 
 #[cfg(test)]

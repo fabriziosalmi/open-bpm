@@ -17,6 +17,11 @@ name = "open-bpm"
 path = "src/main.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "validate_metrics"
+path = "src/bin/validate_metrics.rs"
+required-features = ["cli"]
+
 [features]
 default = ["cli"]
 cli = ["dep:symphonia", "dep:clap"]
