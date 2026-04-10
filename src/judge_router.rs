@@ -42,7 +42,7 @@ impl RouterDecision {
 
 /// Features needed by the router, extracted from the pipeline.
 ///
-/// The 47 features must be in exactly the order listed in
+/// The 32 features must be in exactly the order listed in
 /// `judge_weights::FEATURE_NAMES`. This struct provides a safe builder
 /// that constructs the feature vector from pipeline components.
 pub struct RouterFeatures {
@@ -50,16 +50,9 @@ pub struct RouterFeatures {
 }
 
 impl RouterFeatures {
-    /// Build the feature vector from pipeline outputs.
+    /// Build the 32-element feature vector from pipeline outputs.
     ///
-    /// # Arguments
-    /// * `det_bpm` - Final detected BPM (after fusion + resolve_metrical)
-    /// * `det_conf` - Final confidence
-    /// * `estimators` - Per-estimator results
-    /// * `passport` - Acoustic passport
-    /// * `onsets` - Detected onsets
-    /// * `duration` - Track duration in seconds
-    /// * `phrase_features` - Optional phrase probe features (if None, zeros used)
+    /// All features are computable in pure Rust (no phrase probe / librosa needed).
     pub fn build(
         det_conf: f64,
         estimators: &crate::EstimatorResults,
@@ -67,7 +60,6 @@ impl RouterFeatures {
         onsets: &[Onset],
         det_bpm: f64,
         duration: f64,
-        phrase_features: Option<&PhraseFeatures>,
     ) -> Self {
         let est_val = |e: Option<TempoEstimate>| -> (f64, f64) {
             e.map(|e| (e.bpm, e.confidence)).unwrap_or((0.0, 0.0))
@@ -87,9 +79,6 @@ impl RouterFeatures {
         let es: Vec<f64> = candidates.iter().map(|&c| tempo::empty_slot_score(onsets, c, duration)).collect();
         let me: Vec<f64> = candidates.iter().map(|&c| tempo::median_energy_ratio_score(onsets, c)).collect();
         let io: Vec<f64> = candidates.iter().map(|&c| tempo::ioi_multiple_score(onsets, c)).collect();
-
-        // Phrase features: use provided or zeros
-        let pf = phrase_features.cloned().unwrap_or_default();
 
         let mut values = [0.0f64; N_FEATURES];
         // Order MUST match FEATURE_NAMES in judge_weights.rs
@@ -114,58 +103,8 @@ impl RouterFeatures {
         values[20] = es[0]; values[21] = es[1]; values[22] = es[2]; values[23] = es[3];
         values[24] = me[0]; values[25] = me[1]; values[26] = me[2]; values[27] = me[3];
         values[28] = io[0]; values[29] = io[1]; values[30] = io[2]; values[31] = io[3];
-        // Phrase features [32..46]
-        values[32] = pf.n_beats;
-        values[33] = pf.best_shift;
-        values[34] = pf.best_score;
-        values[35] = pf.prominence;
-        values[36] = pf.is_ternary_top;
-        values[37] = pf.is_edm_phrase_top;
-        values[38] = pf.sim_1;
-        values[39] = pf.sim_2;
-        values[40] = pf.sim_3;
-        values[41] = pf.sim_4;
-        values[42] = pf.sim_6;
-        values[43] = pf.sim_8;
-        values[44] = pf.sim_12;
-        values[45] = pf.sim_16;
-        values[46] = pf.sim_32;
 
         Self { values }
-    }
-}
-
-/// Phrase probe features (computed externally, optional).
-/// If not provided, zeros are used (the classifier still works using
-/// the other 32 features -- `prominence` is the only phrase-exclusive
-/// feature in the top-8 for the "halve" class).
-#[derive(Debug, Clone)]
-pub struct PhraseFeatures {
-    pub n_beats: f64,
-    pub best_shift: f64,
-    pub best_score: f64,
-    pub prominence: f64,
-    pub is_ternary_top: f64,
-    pub is_edm_phrase_top: f64,
-    pub sim_1: f64,
-    pub sim_2: f64,
-    pub sim_3: f64,
-    pub sim_4: f64,
-    pub sim_6: f64,
-    pub sim_8: f64,
-    pub sim_12: f64,
-    pub sim_16: f64,
-    pub sim_32: f64,
-}
-
-impl Default for PhraseFeatures {
-    fn default() -> Self {
-        Self {
-            n_beats: 0.0, best_shift: 0.0, best_score: 0.0,
-            prominence: 0.0, is_ternary_top: 0.0, is_edm_phrase_top: 0.0,
-            sim_1: 0.0, sim_2: 0.0, sim_3: 0.0, sim_4: 0.0, sim_6: 0.0,
-            sim_8: 0.0, sim_12: 0.0, sim_16: 0.0, sim_32: 0.0,
-        }
     }
 }
 
@@ -215,6 +154,12 @@ pub fn apply_router(features: &RouterFeatures) -> RouterDecision {
             best_nonzero_class = c;
         }
     }
+
+    // DEBUG: uncomment to trace router decisions
+    // eprintln!("ROUTER: probs=[{:.3},{:.3},{:.3},{:.3}] best_nz=class{} p={:.3} -> {}",
+    //     probs[0], probs[1], probs[2], probs[3],
+    //     best_nonzero_class, best_nonzero_prob,
+    //     if best_nonzero_prob > THRESHOLD { "OVERRIDE" } else { "keep" });
 
     if best_nonzero_prob > THRESHOLD {
         match best_nonzero_class {

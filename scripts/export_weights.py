@@ -36,12 +36,17 @@ def main():
     df = df[df["label"] != -1].reset_index(drop=True)
     print(f"Trainable: {len(df)}")
 
-    # Feature columns: same drops as train_judge_router_v2.py
+    # Feature columns: drop identifiers, absolute BPMs, and phrase features
+    # (phrase features require librosa beat tracker + chroma not yet ported to Rust)
     drop_cols = [
         "track_id", "dataset", "gt_bpm", "label",
         "det_bpm", "ioi_bpm", "comb_bpm", "ac_bpm", "lowac_bpm", "hopf_bpm", "spec_bpm",
         "bpm_librosa",
         "mode",
+        # Phrase probe features (not available in Rust yet)
+        "n_beats", "best_shift", "best_score", "prominence",
+        "is_ternary_top", "is_edm_phrase_top",
+        "sim_1", "sim_2", "sim_3", "sim_4", "sim_6", "sim_8", "sim_12", "sim_16", "sim_32",
     ]
     feature_cols = []
     for c in df.columns:

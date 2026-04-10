@@ -96,45 +96,67 @@ pub fn detect_with_options(samples: &[f32], sample_rate: u32, opts: &DetectOptio
     let duration = samples.len() as f64 / sr;
 
     // If track is short or segmented is off, analyze the whole thing
-    if !opts.segmented || duration < opts.segment_duration * 2.0 {
+    let mut result = if !opts.segmented || duration < opts.segment_duration * 2.0 {
         let mut result = analyze_segment(samples, sample_rate, opts);
-        // Phrase analysis on full track (needs >= 90s)
         result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
-        return result;
-    }
+        result
+    } else {
+        // Segmented analysis: pick strategic positions (skip intro/outro)
+        let segment_len = (opts.segment_duration * sr) as usize;
+        let positions: Vec<f64> = match opts.num_segments {
+            1 => vec![0.3],
+            2 => vec![0.25, 0.6],
+            _ => vec![0.15, 0.40, 0.70],
+        };
 
-    // Segmented analysis: pick strategic positions (skip intro/outro)
-    let segment_len = (opts.segment_duration * sr) as usize;
-    let positions: Vec<f64> = match opts.num_segments {
-        1 => vec![0.3],
-        2 => vec![0.25, 0.6],
-        _ => vec![0.15, 0.40, 0.70],
+        let mut segment_results: Vec<BpmResult> = Vec::new();
+        for &pos in &positions {
+            let start = ((pos * samples.len() as f64) as usize).min(samples.len().saturating_sub(segment_len));
+            let end = (start + segment_len).min(samples.len());
+            if end - start < (sr * 3.0) as usize {
+                continue;
+            }
+            let result = analyze_segment(&samples[start..end], sample_rate, opts);
+            segment_results.push(result);
+        }
+
+        if segment_results.is_empty() {
+            let mut r = analyze_segment(samples, sample_rate, opts);
+            r.bpm = phrase::resolve_halving(samples, sample_rate, r.bpm, opts.min_bpm);
+            r
+        } else {
+            let mut r = consensus_merge(segment_results, samples, sample_rate, opts);
+            r.bpm = phrase::resolve_halving(samples, sample_rate, r.bpm, opts.min_bpm);
+            r
+        }
     };
 
-    let mut segment_results: Vec<BpmResult> = Vec::new();
-    for &pos in &positions {
-        let start = ((pos * samples.len() as f64) as usize).min(samples.len().saturating_sub(segment_len));
-        let end = (start + segment_len).min(samples.len());
-        if end - start < (sr * 3.0) as usize {
-            continue;
+    // Judge router (Stage 2): learned post-fusion correction.
+    // Operates on the FULL TRACK result (after consensus + phrase halving),
+    // which matches the training data (Python extract_features called detect()).
+    // Recomputes onsets and passport on the full track for feature extraction.
+    if result.bpm > 0.0 {
+        let onsets = onset::detect_onsets_multiband(samples, sample_rate);
+        let onset_pairs: Vec<(f64, f64)> = onsets.iter().map(|o| (o.time, o.strength)).collect();
+        let band_counts = onset::count_per_band(&onsets);
+        let passport = bouncer::extract_passport(samples, sample_rate, &onset_pairs, band_counts);
+
+        let features = judge_router::RouterFeatures::build(
+            result.confidence,
+            &result.estimators,
+            &passport,
+            &onsets,
+            result.bpm,
+            duration,
+        );
+        let decision = judge_router::apply_router(&features);
+        if decision != judge_router::RouterDecision::Keep {
+            let corrected = result.bpm * decision.multiplier();
+            if corrected >= opts.min_bpm && corrected <= opts.max_bpm {
+                result.bpm = (corrected * 100.0).round() / 100.0;
+            }
         }
-        let result = analyze_segment(&samples[start..end], sample_rate, opts);
-        segment_results.push(result);
     }
-
-    if segment_results.is_empty() {
-        let mut result = analyze_segment(samples, sample_rate, opts);
-        result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
-        return result;
-    }
-
-    // Consensus: find the BPM most segments agree on
-    let mut result = consensus_merge(segment_results, samples, sample_rate, opts);
-
-    // Phrase analysis on FULL TRACK (post-consensus, needs >= 90s)
-    // This catches slow tracks doubled to fast BPMs — the phrase structure
-    // at the half BPM will align better with energy valleys.
-    result.bpm = phrase::resolve_halving(samples, sample_rate, result.bpm, opts.min_bpm);
 
     result
 }
