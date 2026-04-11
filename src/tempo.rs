@@ -235,7 +235,7 @@ pub fn autocorrelation(
     // Apply perceptual weight (slight preference for common tempos)
     for lag in min_lag..=max_lag {
         let bpm = frame_rate * 60.0 / lag as f64;
-        if bpm >= DJ_RANGE_LO && bpm <= DJ_RANGE_HI {
+        if (DJ_RANGE_LO..=DJ_RANGE_HI).contains(&bpm) {
             acf[lag] *= 1.0 + DJ_RANGE_BONUS;
         }
     }
@@ -890,7 +890,7 @@ pub fn resolve_metrical(
         if is_original {
             score += 0.2;
         }
-        if candidate >= DJ_RANGE_LO && candidate <= DJ_RANGE_HI {
+        if (DJ_RANGE_LO..=DJ_RANGE_HI).contains(&candidate) {
             score += DJ_RANGE_BONUS * 0.3;
         }
         if score > best_score {
@@ -1014,7 +1014,7 @@ pub fn resolve_octave(
         if is_original {
             score += 0.2;
         }
-        if candidate >= DJ_RANGE_LO && candidate <= DJ_RANGE_HI {
+        if (DJ_RANGE_LO..=DJ_RANGE_HI).contains(&candidate) {
             score += DJ_RANGE_BONUS * 0.3;
         }
         if score > best_score {
@@ -1149,6 +1149,7 @@ fn find_peak_parabolic(histogram: &[f64], min_bpm: f64) -> Option<TempoEstimate>
 ///   - HT correctly defends det over half/double: 7%
 ///   - HT incorrectly prefers double over correct: 81%
 ///   - HT incorrectly prefers half over correct: 41%
+///
 /// On 207 FAIL tracks: HT prefers wrong answer in 69% of cases.
 ///
 /// CONCLUSION: This implementation is BROKEN -- the clamping at 1.0 in

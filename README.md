@@ -1,18 +1,40 @@
 # open-bpm
 
-High-accuracy BPM detection. Pure Rust. No ML models. MIT license.
+High-accuracy BPM detection. Pure Rust. MIT license.
 
 ## Why
 
-Every existing open-source BPM detector picks **one** tempo estimation method and hopes it works. open-bpm runs **three independent estimators** in parallel and fuses their results — the same signal can't fool all three the same way.
+Every existing open-source BPM detector picks **one** tempo estimation method and hopes it works. open-bpm runs **six independent estimators** in parallel, fuses their results with metrical-aware clustering, then applies a **learned judge router** that corrects octave errors using a logistic regression trained on 1951 annotated tracks across three datasets.
+
+### Two-Stage Architecture
+
+**Stage 1 -- Signal Processing (pure, no learned parameters):**
 
 | Estimator | What it measures | Why it helps |
 |-----------|-----------------|--------------|
 | IOI Histogram | Direct inter-onset interval measurement | Sub-BPM resolution from timing pairs |
 | Comb Filter Bank | Resonance at beat periods | Robust when onsets are missing/noisy |
 | Autocorrelation | Periodicity of onset envelope | Strong on steady rhythms |
+| Low-Band AC | Kick-only autocorrelation (< 200 Hz) | Immune to triplet hi-hat confusion |
+| Spectral Energy | FFT of RMS envelope | Independent from onset detection |
+| Hopf Oscillator | Nonlinear resonator bank | Robust to missing beats and syncopation |
 
-When 2+ estimators agree: weighted average. When they disagree: highest confidence wins. When all three agree: confidence bonus.
+**Stage 2 -- Judge Router (learned, 32 features, 4 classes):**
+
+A multinomial logistic regression decides whether to keep, halve, double, or triple the Stage 1 BPM. Trained on GiantSteps (EDM), Ballroom (dance), and GTZAN (10 genres). Only fires when confident (P > 0.65), otherwise preserves Stage 1. All weights are compile-time Rust constants -- zero external files, zero runtime dependencies.
+
+## Accuracy
+
+Evaluated on 2361 tracks across three standard MIR benchmarks:
+
+| Dataset | Tracks | Genres | Acc1 (4% tol) | Acc2 (octave) |
+|---------|--------|--------|---------------|---------------|
+| GiantSteps | 664 | Electronic dance music | **68.8%** | 78.7% |
+| Ballroom | 698 | 10 ballroom dance styles | **68.7%** | 87.1% |
+| GTZAN | 999 | 10 genres (blues, classical, country, disco, hip-hop, jazz, metal, pop, reggae, rock) | **59.4%** | 83.3% |
+| **Combined** | **2361** | | **64.9%** | **83.2%** |
+
+The judge router improved Ballroom from 61.3% to 68.7% (+52 tracks) with zero regressions on GiantSteps. See [BENCHMARK.md](BENCHMARK.md) for full analysis including per-genre breakdowns, error distributions, and the 6-round optimization history.
 
 ## Install
 
@@ -73,13 +95,20 @@ Audio ──► Multi-band filter (low/mid/high)
          Weighted merge (kick=2x, snare=1.5x, hat=0.5x)
              │
              ├──► IOI Histogram ──┐
-             ├──► Comb Filter ────┤──► Fusion ──► Octave resolution
-             └──► Autocorrelation ┘         │
-                                            ▼
-                                    Fine refinement (±2.5 BPM @ 0.1 step)
+             ├──► Comb Filter ────┤
+             ├──► Autocorrelation ┤──► Metrical fusion ──► Octave resolution
+             ├──► Low-Band AC ────┤         │
+             ├──► Spectral FFT ───┘         ▼
+             └──► Hopf Oscillator ──► Tiebreaker (low confidence)
                                             │
                                             ▼
-                                    PLL grid offset ──► Integer snap ──► Result
+                                    Bar count + Phrase halving
+                                            │
+                                            ▼
+                                    Judge Router (32-feat LR, 4 classes)
+                                            │
+                                            ▼
+                                    Grid refinement ──► Integer snap ──► Result
 ```
 
 See [OpenBPM.md](OpenBPM.md) for the full mathematical specification.
@@ -94,11 +123,22 @@ Apple M-series, release build:
 | 3 min | ~180 ms |
 | 8 min | ~250 ms |
 
-Binary size: ~2.4 MB (with Symphonia decoder).
+Binary size: ~2.4 MB (with Symphonia decoder). The judge router adds negligible overhead (~1 ms for 32 feature extractions + a 32x4 dot product).
 
-## Accuracy
+## Benchmarking
 
-See [PROGRESS.md](PROGRESS.md) for benchmark results and iteration history.
+Run the GiantSteps benchmark:
+
+```bash
+./bench/run_benchmark.sh
+```
+
+Additional datasets (require separate download):
+
+```bash
+./bench/run_ballroom_benchmark.sh    # 698 ballroom dance tracks
+./bench/run_gtzan_benchmark.sh       # 999 tracks across 10 genres
+```
 
 ## License
 

@@ -1,16 +1,21 @@
 # open-bpm: Session Progress and Roadmap
 
-**Last update:** 2026-04-09 (afternoon)
+**Last update:** 2026-04-11
 
 ## TL;DR
 
-We have validated empirically that a logistic-regression judge router
-trained on GiantSteps + Ballroom + GTZAN can correct 143 out of 1951
-trainable tracks (Acc1 75.9% -> 82.0%, +6.1pp) when applied as a Stage 2
-post-fusion correction. Cross-dataset zero-shot generalization works on
-Ballroom (+46 tracks) but fails on GiantSteps (severe prior shift).
-Next session integrates the model into the Rust pipeline and re-runs
-the benchmarks end-to-end.
+The judge router is **integrated and deployed** in the Rust pipeline.
+End-to-end benchmark results on 2361 tracks across 3 datasets:
+
+| Dataset | Before Router | After Router | Delta |
+|---|---|---|---|
+| GiantSteps (664) | 68.8% | 68.8% | +0 (zero regressions) |
+| Ballroom (698) | 61.3% | **68.7%** | **+52 tracks (+7.4pp)** |
+| GTZAN (999) | 59.6% | 59.4% | -1 (neutral) |
+
+The Rust deployment uses a 32-feature model (without phrase probe features
+which require librosa). The full 47-feature model achieved +143 in cross-
+validation but the 32-feature model achieves +102 in CV and +52 end-to-end.
 
 ## Where we are in the larger arc
 
@@ -108,40 +113,30 @@ in the entire session. It justifies proceeding to Rust integration.
    (train BB+GZ) gives -445 because GiantSteps has a different label prior
    (90% label=0 vs 75% in BB+GZ).
 
-## What to do next session
+## Completed steps (2026-04-10/11)
 
-### Step 1 -- Export the trained model to Rust (priority 1)
+### Step 1 -- Export weights to Rust ✅
+Trained on 1951 rows with 32 features (phrase features dropped since
+librosa is not available in Rust). Exported via `scripts/export_weights.py`
+to `src/judge_weights.rs`: 196 f64 constants (128 coef + 4 intercept +
+64 scaler params). Training accuracy: 82.4%.
 
-The current `train_judge_router_v2.py` trains a `sklearn.LogisticRegression`
-on 47 features. We need to:
+### Step 2 -- Judge router module ✅
+`src/judge_router.rs`: pure-Rust softmax inference + threshold gating.
+`RouterFeatures::build()` extracts 32 features from pipeline outputs.
+Zero allocations at inference time.
 
-1. Run the training one final time on all 1951 trainable rows
-2. Save the model coefficients (`clf.coef_`) and intercepts (`clf.intercept_`)
-3. Save the StandardScaler `mean_` and `scale_` arrays
-4. Save the feature column order (must match exactly at inference)
-5. Export as a Rust constants file (e.g. `src/judge_router_weights.rs`)
+### Step 3 -- Pipeline integration ✅
+Router inserted in `detect_with_options()` after consensus merge + phrase
+halving. Operates on the full track result (matching the Python training).
+Recomputes onsets + passport on the full track for feature extraction.
 
-The total payload is ~200 numbers (4 classes × 47 coefs + 4 intercepts +
-2 × 47 scaler params). Trivial to embed.
+### Step 4 -- End-to-end benchmark ✅
+GS: 68.8% (unchanged), BB: 68.7% (+52), GZ: 59.4% (-1).
 
-### Step 2 -- Add a `judge_router` module in Rust
+## What to do next (future work)
 
-`src/judge_router.rs`:
-- Pure function `apply_router(features: &[f64; 47]) -> u8` returning
-  the predicted class (0 = keep, 1 = halve, 2 = double, 3 = triple)
-- Use threshold gating: only override class 0 if `P(non-zero) > 0.65`
-- Helper to extract the 47 features from a `BpmResult` + `AcousticPassport`
-  + a phrase probe
-
-### Step 3 -- Implement the phrase probe in Rust
-
-This is the new dependency we have only in Python (`librosa.beat.beat_track`
-+ `librosa.feature.chroma_cqt`). For Rust we need:
-
-- Beat tracking (we already have onsets via `onset::detect_onsets_multiband`,
-  could derive beat times by autocorrelation peak picking)
-- Chromagram (CQT-based, ~12 pitch classes per frame)
-- Beat-synchronous chroma aggregation
+### Phrase probe port to Rust (recovers ~40 tracks)
 - Cosine similarity at shifts {1,2,3,4,6,8,12,16,32}
 
 This is a non-trivial port. **Alternative path** to consider: implement a
@@ -150,36 +145,26 @@ The Round 6 top features for Class 1 (halve) are:
   io_half (+1.80), transient_density (+1.64), io_det (+1.46), io_triple (+0.89),
   comb_conf (+0.66), n_onsets (-0.63), duration_s (+0.50), prominence (+0.48)
 
-Of these, ONLY `prominence` requires the chroma probe. The other 7 features
-are all already computable by the existing Rust pipeline. So a fallback
-is to retrain WITHOUT phrase features and see how much we lose. Might be
-worth a quick test before doing the full chroma port.
+The current Rust model uses 32 features. A 47-feature model (including
+phrase probe: beat-aligned chroma self-similarity, prominence, best_shift,
+sim curve) scored +143 in cross-validation vs +102 for 32-feat. Porting
+librosa's `beat_track` + `chroma_cqt` to Rust would recover ~40 tracks.
+This is non-trivial but the top-contributing phrase feature (`prominence`)
+accounts for most of the gap.
 
-### Step 4 -- Integrate router into `analyze_segment`
+### Hainsworth as 4th dataset
+222 non-EDM tracks (rock, pop, classical, folk). ~30 min total to download,
+benchmark, extract features, and retrain. May improve generalization on
+classical/jazz (currently 33% and 47% Acc1 on GTZAN).
 
-In `src/lib.rs:analyze_segment`, after the existing `resolved` step,
-add a new Stage 2 that:
-1. Computes the 47 features
-2. Calls `judge_router::apply_router(&features)` -> class
-3. Applies the multiplier: 1.0, 0.5, 2.0, or 3.0 to `resolved.bpm`
-4. Re-runs the grid alignment / snap / phrase halving on the corrected BPM
+### Lower threshold to recover GTZAN gains
+Current threshold is 0.65. In cross-validation, t=0.55 gives +30 more
+tracks on GTZAN but risks a few regressions on GiantSteps. Worth testing.
 
-### Step 5 -- Re-run all 3 benchmarks end-to-end
-
-Compare:
-- Round 0 (baseline): GS 68.8%, BB 61.3%, GZ 59.6%
-- Round 6 (with router): expected ~75-78%, ~70-75%, ~65-70%
-
-If the actual gains differ from the predicted +6-8pp, debug the integration
-(usually a feature ordering bug or a normalization mismatch).
-
-### Step 6 -- Decide on Hainsworth
-
-Only if Round 6 integration confirms gains AND we want to push generalization
-further. Hainsworth has 222 non-EDM tracks (rock, pop, classical, folk).
-Adding it as a 4th dataset might either help (more variety in priors) or
-hurt (genre too far from any seen). The added cost is modest (~30 minutes
-total) so it's worth doing as a last validation step.
+### Random forest as alternative model
+A small RF (5-10 trees, depth 4) might capture non-linear feature
+interactions. Harder to export to Rust (need a tree evaluator) but
+could improve the 32-feature model without needing phrase features.
 
 ## Open architectural questions for future rounds
 

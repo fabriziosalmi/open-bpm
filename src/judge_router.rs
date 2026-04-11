@@ -2,7 +2,14 @@
 //!
 //! A multinomial logistic regression trained on GiantSteps + Ballroom + GTZAN
 //! (1951 tracks) predicts whether the fused BPM should be kept, halved,
-//! doubled, or tripled based on 47 features extracted from the pipeline.
+//! doubled, or tripled based on 32 features extracted from the pipeline.
+//!
+//! The training used 47 features (including 15 phrase probe features from
+//! librosa beat tracking + chromagram analysis), but the Rust deployment
+//! uses only the 32 features computable in pure Rust. The phrase features
+//! were dropped because porting librosa's beat tracker and CQT chromagram
+//! is non-trivial. The 32-feature model achieves +102 tracks in cross-
+//! validation vs +143 for the full 47-feature model.
 //!
 //! The router only fires when it is confident in a non-zero class
 //! (P > THRESHOLD). Otherwise the original fused BPM is preserved.
@@ -148,9 +155,9 @@ pub fn apply_router(features: &RouterFeatures) -> RouterDecision {
     //    has probability above THRESHOLD.
     let mut best_nonzero_class = 1usize;
     let mut best_nonzero_prob = probs[1];
-    for c in 2..N_CLASSES {
-        if probs[c] > best_nonzero_prob {
-            best_nonzero_prob = probs[c];
+    for (c, &p) in probs.iter().enumerate().skip(2) {
+        if p > best_nonzero_prob {
+            best_nonzero_prob = p;
             best_nonzero_class = c;
         }
     }

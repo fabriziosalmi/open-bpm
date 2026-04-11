@@ -20,7 +20,6 @@ pub mod beat;
 pub mod bouncer;
 pub mod judge_router;
 pub mod judge_weights;
-pub mod metalearner;
 pub mod onset;
 pub mod phrase;
 pub mod spectral;

@@ -112,7 +112,7 @@ pub fn phrase_score(samples: &[f32], sample_rate: u32, bpm: f64) -> f64 {
         return 0.5;
     }
 
-    aligned as f64 / total_pairs as f64
+    aligned / total_pairs as f64
 }
 
 /// Resolve half/double ambiguity using phrase structure.
@@ -141,7 +141,7 @@ pub fn resolve_halving(
     let phrase_secs = 60.0 / half * 4.0 * 16.0; // 16-bar phrase at half BPM
     let min_duration = phrase_secs * 3.5; // need ~3.5 phrases minimum (conservative)
 
-    if bpm < 140.0 || bpm > 200.0 || half < min_bpm || duration < min_duration {
+    if !(140.0..=200.0).contains(&bpm) || half < min_bpm || duration < min_duration {
         return bpm;
     }
 

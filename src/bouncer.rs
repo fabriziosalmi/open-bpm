@@ -71,7 +71,7 @@ fn compute_crest_factor(samples: &[f32]) -> (f32, bool) {
         return (0.0, true);
     }
 
-    let step = 100.max(1); // subsample for speed
+    let step = 100; // subsample for speed
     let mut peak = 0.0f64;
     let mut sum_sq = 0.0f64;
     let mut count = 0usize;

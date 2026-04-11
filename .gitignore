@@ -32,3 +32,4 @@ bench/gtzan_results_fileids.tsv
 # Extraction logs (always regenerable from source)
 bench/*.log
 ~/mir_datasets/
+.claude/
