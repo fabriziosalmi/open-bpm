@@ -33,3 +33,6 @@ bench/gtzan_results_fileids.tsv
 bench/*.log
 ~/mir_datasets/
 .claude/
+
+# Workspace settings - 2026-05-07
+tmp/
