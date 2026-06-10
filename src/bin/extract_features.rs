@@ -204,7 +204,7 @@ fn main() {
         );
 
         count += 1;
-        if count % 50 == 0 {
+        if count.is_multiple_of(50) {
             eprintln!("  ... {} tracks processed", count);
         }
     }
