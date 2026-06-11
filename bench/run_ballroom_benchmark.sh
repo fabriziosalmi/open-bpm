@@ -116,8 +116,18 @@ echo "  Tracks tested:    $total"
 echo "  Missing audio:    $missing"
 echo "  Detection errors: $errors"
 echo ""
-echo "  Acc1 (4% tol):    $acc1_pass / $total  ($(echo "scale=1; $acc1_pass * 100 / $total" | bc)%)"
-echo "  Acc2 (octave):    $acc2_pass / $total  ($(echo "scale=1; $acc2_pass * 100 / $total" | bc)%)"
+
+# Guard against division by zero when no tracks were processed
+if [ "$total" -gt 0 ]; then
+    acc1_pct=$(echo "scale=1; $acc1_pass * 100 / $total" | bc)
+    acc2_pct=$(echo "scale=1; $acc2_pass * 100 / $total" | bc)
+else
+    acc1_pct=0
+    acc2_pct=0
+fi
+
+echo "  Acc1 (4% tol):    $acc1_pass / $total  (${acc1_pct}%)"
+echo "  Acc2 (octave):    $acc2_pass / $total  (${acc2_pct}%)"
 echo "  Octave errors:    $octave_errors"
 echo ""
 echo "  Results: $RESULTS"
