@@ -36,6 +36,25 @@ missing=0
 RESULTS="$SCRIPT_DIR/benchmark_results.tsv"
 echo -e "track_id\tground_truth\tdetected\terror_pct\tacc1\tacc2" > "$RESULTS"
 
+# Helper: validate numeric (integer or decimal, positive or negative)
+is_numeric() {
+    local val="$1"
+    [[ "$val" =~ ^-?[0-9]+\.?[0-9]*$ ]]
+}
+
+# Helper: safe bc evaluation with fallback on error
+bc_eval() {
+    local expr="$1"
+    local fallback="${2:-0}"
+    local result
+    result=$(echo "scale=10; $expr" | bc -l 2>/dev/null) || result=""
+    if [ -z "$result" ] || ! is_numeric "$result"; then
+        echo "$fallback"
+    else
+        echo "$result"
+    fi
+}
+
 for anno in "$ANNO_DIR"/*.bpm; do
     [ "$total" -ge "$MAX_TRACKS" ] && break
 
@@ -47,9 +66,16 @@ for anno in "$ANNO_DIR"/*.bpm; do
         continue
     fi
 
-    # Read ground truth BPM
+    # Read and validate ground truth BPM
     gt_bpm=$(cat "$anno" | tr -d '[:space:]')
-    if [ -z "$gt_bpm" ] || [ "$gt_bpm" = "0" ]; then
+    if [ -z "$gt_bpm" ]; then
+        continue
+    fi
+    if ! is_numeric "$gt_bpm"; then
+        continue
+    fi
+    # Skip zero or negative BPM (invalid for tempo)
+    if [ "$(echo "$gt_bpm <= 0" | bc -l)" -eq 1 ]; then
         continue
     fi
 
@@ -62,13 +88,13 @@ for anno in "$ANNO_DIR"/*.bpm; do
         continue
     fi
 
-    # Compute error percentage
-    error_pct=$(echo "scale=4; ($detected - $gt_bpm) / $gt_bpm * 100" | bc -l 2>/dev/null || echo "0")
-    abs_error_pct=$(echo "scale=4; e = $error_pct; if (e < 0) e = -e; e" | bc -l 2>/dev/null || echo "0")
+    # Compute error percentage safely
+    error_pct=$(bc_eval "($detected - $gt_bpm) / $gt_bpm * 100" "0")
+    abs_error_pct=$(bc_eval "e = $error_pct; if (e < 0) -e else e" "0")
 
     # Acc1: within 4%
     acc1="FAIL"
-    if (( $(echo "$abs_error_pct <= 4.0" | bc -l) )); then
+    if [ "$(echo "$abs_error_pct <= 4.0" | bc -l)" -eq 1 ]; then
         acc1="PASS"
         acc1_pass=$((acc1_pass + 1))
     fi
@@ -76,9 +102,9 @@ for anno in "$ANNO_DIR"/*.bpm; do
     # Acc2: within 4% of truth, 2*truth, truth/2, 3*truth, truth/3
     acc2="FAIL"
     for mult in 1.0 2.0 0.5 3.0 0.3333; do
-        ref=$(echo "scale=4; $gt_bpm * $mult" | bc -l)
-        ref_error=$(echo "scale=4; e = ($detected - $ref) / $ref * 100; if (e < 0) e = -e; e" | bc -l 2>/dev/null || echo "999")
-        if (( $(echo "$ref_error <= 4.0" | bc -l) )); then
+        ref=$(bc_eval "$gt_bpm * $mult" "0")
+        ref_error=$(bc_eval "e = ($detected - $ref) / $ref * 100; if (e < 0) -e else e" "999")
+        if [ "$(echo "$ref_error <= 4.0" | bc -l)" -eq 1 ]; then
             acc2="PASS"
             break
         fi
@@ -110,8 +136,8 @@ echo "  Tracks tested:    $total"
 echo "  Missing audio:    $missing"
 echo "  Detection errors: $errors"
 echo ""
-echo "  Acc1 (4% tol):    $acc1_pass / $total  ($(echo "scale=1; $acc1_pass * 100 / $total" | bc)%)"
-echo "  Acc2 (octave):    $acc2_pass / $total  ($(echo "scale=1; $acc2_pass * 100 / $total" | bc)%)"
+echo "  Acc1 (4% tol):    $acc1_pass / $total  ($(echo "scale=1; $acc1_pass * 100 / $total" | bc)% )"
+echo "  Acc2 (octave):    $acc2_pass / $total  ($(echo "scale=1; $acc2_pass * 100 / $total" | bc)% )"
 echo "  Octave errors:    $octave_errors"
 echo ""
 echo "  Results: $RESULTS"
