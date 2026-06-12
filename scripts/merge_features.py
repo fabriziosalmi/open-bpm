@@ -13,15 +13,26 @@ Usage:
 """
 
 import pandas as pd
+import sys
 
 
 def load_with_dataset(judge_path, phrase_path, dataset_name):
     judge = pd.read_csv(judge_path, sep="\t")
     phrase = pd.read_csv(phrase_path, sep="\t")
 
-    # phrase already has track_id, gt_bpm, det_bpm, label, dataset
-    # judge has track_id, gt_bpm, det_bpm, det_conf, ..., label
-    # We want to join on track_id and keep only one copy of (gt, det, label).
+    # Validate required columns exist in both files
+    required_judge_cols = {"track_id", "gt_bpm", "det_bpm", "label"}
+    required_phrase_cols = {"track_id"}
+
+    missing_judge = required_judge_cols - set(judge.columns)
+    missing_phrase = required_phrase_cols - set(phrase.columns)
+
+    if missing_judge:
+        print(f"Error: {judge_path} missing required columns: {missing_judge}", file=sys.stderr)
+        sys.exit(1)
+    if missing_phrase:
+        print(f"Error: {phrase_path} missing required columns: {missing_phrase}", file=sys.stderr)
+        sys.exit(1)
 
     # Drop duplicate columns from phrase (keep judge's)
     phrase = phrase.drop(columns=["gt_bpm", "det_bpm", "label"], errors="ignore")
