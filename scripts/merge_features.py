@@ -34,6 +34,14 @@ def load_with_dataset(judge_path, phrase_path, dataset_name):
         print(f"Error: {phrase_path} missing required columns: {missing_phrase}", file=sys.stderr)
         sys.exit(1)
 
+    # Guard against empty input files
+    if len(judge) == 0:
+        print(f"Error: {judge_path} is empty (no data rows)", file=sys.stderr)
+        sys.exit(1)
+    if len(phrase) == 0:
+        print(f"Error: {phrase_path} is empty (no data rows)", file=sys.stderr)
+        sys.exit(1)
+
     # Drop duplicate columns from phrase (keep judge's)
     phrase = phrase.drop(columns=["gt_bpm", "det_bpm", "label"], errors="ignore")
 
