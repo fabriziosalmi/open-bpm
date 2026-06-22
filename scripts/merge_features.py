@@ -42,6 +42,16 @@ def load_with_dataset(judge_path, phrase_path, dataset_name):
         print(f"Error: {phrase_path} is empty (no data rows)", file=sys.stderr)
         sys.exit(1)
 
+    # Guard against duplicate track_ids (would cause Cartesian explosion on merge)
+    judge_dupes = judge["track_id"].duplicated().any()
+    phrase_dupes = phrase["track_id"].duplicated().any()
+    if judge_dupes:
+        print(f"Error: {judge_path} contains duplicate track_ids", file=sys.stderr)
+        sys.exit(1)
+    if phrase_dupes:
+        print(f"Error: {phrase_path} contains duplicate track_ids", file=sys.stderr)
+        sys.exit(1)
+
     # Drop duplicate columns from phrase (keep judge's)
     phrase = phrase.drop(columns=["gt_bpm", "det_bpm", "label"], errors="ignore")
 
