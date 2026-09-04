@@ -1,3 +1,4 @@
+// OpenBPM Documentation & SEO Configuration
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
