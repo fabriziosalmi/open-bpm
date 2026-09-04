@@ -1,0 +1,23 @@
+# OpenBPM
+
+> High-accuracy BPM detection library and CLI written in pure Rust.
+
+## Overview
+
+OpenBPM is a fast, deterministic music tempo (BPM) detection engine written in pure Rust. Unlike existing open-source tools that rely on a single estimation method, OpenBPM executes six independent estimators in parallel and applies a learned judge router (multinomial logistic regression) to resolve octave ambiguities (half/double tempo errors).
+
+## Key Features
+
+- **Pure Rust**: Zero external C dependencies. The core signal processing relies only on `rustfft`.
+- **6 Parallel Estimators**: IOI Histogram, Comb Filter Bank, Autocorrelation, Low-Band Autocorrelation, Spectral Energy (FFT of RMS envelope), and Hopf Oscillator.
+- **Learned Judge Router**: 32-feature multinomial logistic regression model trained on 1951 tracks across GiantSteps (EDM), Ballroom (dance), and GTZAN (10 genres). All weights are compile-time constants.
+- **Benchmark Accuracy**: Evaluated on 2361 tracks across standard MIR datasets. Achieves 83.2% octave accuracy.
+- **Supported Formats**: WAV, MP3, FLAC, OGG, and AAC via Symphonia.
+
+## Documentation Links
+
+- [Introduction](https://fabriziosalmi.github.io/open-bpm/guide/introduction): Architectural overview and pipeline details.
+- [Installation & CLI Usage](https://fabriziosalmi.github.io/open-bpm/guide/installation): Cargo installation, CLI options, and Rust library usage.
+- [Technical Specification](https://fabriziosalmi.github.io/open-bpm/guide/specification): Mathematical definitions of signal model, biquad filters, SuperFlux onset detection, and estimators.
+- [Benchmarks & Evaluation](https://fabriziosalmi.github.io/open-bpm/guide/benchmarks): Empirical evaluation on GiantSteps, Ballroom, and GTZAN datasets.
+- [Architecture & State](https://fabriziosalmi.github.io/open-bpm/guide/architecture): State machine, judge router evaluation, and development roadmap.
