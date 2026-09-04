@@ -36,3 +36,8 @@ bench/*.log
 
 # Workspace settings - 2026-05-07
 tmp/
+
+# VitePress docs
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
