@@ -13,6 +13,8 @@ export default defineConfig({
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/open-bpm/favicon.svg' }],
+    ['link', { rel: 'apple-touch-icon', href: '/open-bpm/favicon.svg' }],
+    ['link', { rel: 'canonical', href: 'https://fabriziosalmi.github.io/open-bpm/' }],
     ['meta', { name: 'theme-color', content: '#10b981' }],
     ['meta', { name: 'color-scheme', content: 'dark light' }],
     ['meta', { property: 'og:type', content: 'website' }],
@@ -26,6 +28,7 @@ export default defineConfig({
       },
     ],
     ['meta', { property: 'og:url', content: 'https://fabriziosalmi.github.io/open-bpm/' }],
+    ['meta', { property: 'og:image', content: 'https://fabriziosalmi.github.io/open-bpm/favicon.svg' }],
     ['meta', { name: 'twitter:card', content: 'summary' }],
     ['meta', { name: 'twitter:title', content: 'OpenBPM — High-Accuracy BPM Detection in Rust' }],
     [
@@ -35,7 +38,26 @@ export default defineConfig({
         content: 'Pure Rust BPM detection library and CLI. 6 estimators, metrical fusion, octave resolution.',
       },
     ],
+    ['meta', { name: 'twitter:image', content: 'https://fabriziosalmi.github.io/open-bpm/favicon.svg' }],
     ['meta', { name: 'robots', content: 'index, follow, max-image-preview:large' }],
+    [
+      'script',
+      { type: 'application/ld+json' },
+      JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'OpenBPM',
+        operatingSystem: 'Cross-platform',
+        applicationCategory: 'AudioApplication',
+        description: 'High-accuracy BPM detection library and CLI written in pure Rust.',
+        url: 'https://fabriziosalmi.github.io/open-bpm/',
+        author: {
+          '@type': 'Person',
+          name: 'Fabrizio Salmi',
+          url: 'https://github.com/fabriziosalmi',
+        },
+      }),
+    ],
   ],
 
   themeConfig: {

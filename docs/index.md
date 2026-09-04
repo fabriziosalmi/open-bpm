@@ -1,5 +1,7 @@
 ---
 layout: home
+title: OpenBPM — High-Accuracy BPM Detection in Pure Rust
+titleTemplate: false
 
 hero:
   name: "OpenBPM"
